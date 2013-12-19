@@ -52,19 +52,13 @@ func reedWrite() {
 }
 
 func writeReed(addr *net.UDPAddr, port int) {
-	str := addr.IP.String() + ":" + strconv.Itoa(port)
-	fmt.Println(str)
-	a, err := net.ResolveUDPAddr("udp", str)
-	check(err)
+	a, err := net.ResolveUDPAddr("udp", addr.IP.String()+":"+strconv.Itoa(port))
 	c, err := net.DialUDP("udp", nil, a)
 	check(err)
 	b := []byte("hello")
 	_, err = c.Write(b)
 	check(err)
 	_, err = c.Read(b)
-	if err != nil {
-		fmt.Println("poop")
-	}
 	check(err)
 }
 
@@ -99,6 +93,14 @@ func listenMultiCast() {
 			for _, s := range secrets {
 				if r.Share == sha1.Sum([]byte(s)) {
 					//spawn socket
+					//TODO make "known hosts"
+					//  if unknown
+					//    add
+					//  else
+					//    nothing
+					//
+					//TODO polling "known hosts" periodically?
+					//TODO send broadcast to "known hosts" when change happens?
 					writeReed(addr.(*net.UDPAddr), r.Port)
 				}
 			}
