@@ -5,7 +5,9 @@ import (
 	bencode "code.google.com/p/bencode-go"
 	"crypto/sha1"
 	"encoding/json"
+	"io"
 	"io/ioutil"
+	"os"
 	"strconv"
 	//"os"
 	//"path/filepath"
@@ -15,13 +17,13 @@ import (
 	"time"
 )
 
+var secrets []string
+
 func check(err error) {
 	if err != nil {
 		fmt.Println(err)
 	}
 }
-
-var secrets []string
 
 func parseConfig() {
 	f, err := ioutil.ReadFile("./test.conf")
@@ -37,7 +39,7 @@ func parseConfig() {
 }
 
 func reedWrite() {
-	//TODO guess locally i recognize myself different? should be non-issue
+	//TODO guess locally if recognize myself different? should be non-issue
 	addr, err := net.ResolveUDPAddr("udp", "192.168.1.64:6667")
 	check(err)
 	sock, err := net.ListenUDP("udp", addr)
@@ -47,28 +49,82 @@ func reedWrite() {
 		_, c, err := sock.ReadFrom(b)
 		check(err)
 		fmt.Println(string(b))
-		sock.WriteTo(b, c)
+		var r bt_req
+		err = bencode.Unmarshal(bytes.NewBuffer(b), &r)
+		switch r.req_type {
+		case 0:
+			reply(sock, c, r.piece)
+		case 1:
+		}
+		//sock.WriteTo(b, c)
 	}
+}
+
+func reply(c *net.UDPConn, addr net.Addr, part int64) {
+	f, err := os.Open("shit")
+	check(err)
+	//fi, err := f.Stat()
+	//check(err)
+	//var i int64 = 0
+	//numChans := fi.Size() / 16
+	//ch := make(chan []byte, numChans)
+	//for ; i*16 < fi.Size(); i++ {
+	b := make([]byte, 16)
+	n, err := f.ReadAt(b, int64(part*16))
+	if n < len(b) && err == io.EOF {
+		//truncate []byte?
+	}
+	//go func() {
+	_, err = c.WriteTo(b, addr)
+	check(err)
+	//ch <- b
+	//}()
+
+	//<-ch
+}
+
+type bt_req struct {
+	req_type int
+	filename string
+	piece    int64
+}
+
+func request(c *net.UDPConn, part int64) {
+	var b bytes.Buffer
+	err := bencode.Marshal(&b, bt_req{
+		0,
+		"shit",
+		part,
+	})
+	check(err)
+	_, err = c.Write(b.Bytes())
+	check(err)
+	r := make([]byte, 4096)
+	_, err = c.Read(r)
+	fmt.Println(string(r))
 }
 
 func writeReed(addr *net.UDPAddr, port int) {
 	a, err := net.ResolveUDPAddr("udp", addr.IP.String()+":"+strconv.Itoa(port))
 	c, err := net.DialUDP("udp", nil, a)
 	check(err)
-	b := []byte("hello")
-	_, err = c.Write(b)
-	check(err)
-	_, err = c.Read(b)
-	check(err)
+	request(c, 0)
+
+	//TODO reduce below to only shoot needed chunks
+	//receiver sends needed chunk, reply with only that
+	//TODO figure out if reading or writing
+	//write out all chunks of a file
+
 }
 
-//TODO maybe won't need this, but just in case
+//TODO definitely use this
 func getMulticastAddrs() []net.Addr {
 	var addr []net.Addr
 	is, _ := net.Interfaces()
 	for _, i := range is {
 		addrs, _ := i.MulticastAddrs()
 		for _, a := range addrs {
+			//TODO only use IPv4?
 			addr = append(addr, a)
 			fmt.Println(a)
 		}
@@ -100,10 +156,11 @@ func listenMultiCast() {
 					//    nothing
 					//
 					//TODO polling "known hosts" periodically?
-					//TODO send broadcast to "known hosts" when change happens?
+					//TODO send broadcast to "known hosts" when change happens? (fsnotify)
 					writeReed(addr.(*net.UDPAddr), r.Port)
 				}
 			}
+			////this computes hash of most recent change in directory, recursively
 			//h := sha1.New()
 			//filepath.Walk("./", func(path string, f os.FileInfo, err error) error {
 			//io.WriteString(h, f.ModTime().String())
@@ -120,7 +177,7 @@ type BCast struct {
 	M     string   `m`
 	Port  int      `port`
 	Share [20]byte `share`
-	Peer  string   `peer`
+	Peer  [20]byte `peer`
 }
 
 //key:
@@ -141,7 +198,8 @@ func sendMultiCast() {
 			"ping",
 			6667,
 			sha1.Sum([]byte(secrets[0])),
-			"poop",
+			//FIXME not sure if Network() is sufficient
+			sha1.Sum([]byte(addr.Network())),
 		})
 
 		check(err)
