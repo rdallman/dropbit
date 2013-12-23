@@ -10,4 +10,6 @@
 * key generation
 * web interface
 * uTP (cgo?)
-* use secret to get hosts to render web page to sync data
+* use secret to get hosts to render web page to read data remotely (web)?
+
+* name ideas: bitlocker, torrsync

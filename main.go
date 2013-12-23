@@ -8,16 +8,18 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strconv"
-	//"os"
-	//"path/filepath"
 	//"encoding/base32"
 	"fmt"
 	"net"
 	"time"
 )
 
-var secrets []string
+//secret : path
+var folders = make(map[string]string)
+
+const BLOCK_SIZE = 16 * 1024
 
 func check(err error) {
 	if err != nil {
@@ -25,6 +27,8 @@ func check(err error) {
 	}
 }
 
+//TODO watch changes on this file to reload it
+//TODO put these in home ~/.config/dbit/ for linux
 func parseConfig() {
 	f, err := ioutil.ReadFile("./test.conf")
 	check(err)
@@ -33,9 +37,79 @@ func parseConfig() {
 		Path   string
 	}{}
 	json.Unmarshal(f, &shares)
+	//map secrets to absolute paths in mem to know what to do when we get one
 	for _, s := range shares {
-		secrets = append(secrets, s.Secret)
+		folders[s.Secret] = s.Path
+		_, err := os.Open("./" + s.Secret)
+		//if this is a new share
+		if err != nil {
+			f, err := os.Create("./" + s.Secret + ".torrent")
+			check(err)
+
+			var buf bytes.Buffer
+			bt_files := make([]bt_file, 0)
+			//TODO append metadata
+			//TODO potential bottleneck here, walk is slow -- but must be done somehow
+			//  it appears there are about 20 ways to do io in stdlib
+			filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
+				d, err := ioutil.ReadFile(path)
+				buf.Write(d)
+				bt_files = append(bt_files, bt_file{f.Size(), path})
+				return nil
+			})
+
+			pieces := buf.Bytes()
+			var plength int
+			if len(pieces) < BLOCK_SIZE {
+				plength = len(pieces)
+			} else {
+				plength = BLOCK_SIZE
+			}
+
+			iters := len(pieces) / plength
+			//on the off chance of perfection...
+			if len(pieces)%plength > 0 {
+				iters += 1
+			}
+
+			phash := make(chan int, iters)
+			realp := make([]byte, iters*20)
+			for i := 0; i < iters; i++ {
+				//TODO need concurrency bad
+				go func(i int) {
+					s := sha1.Sum(pieces[plength*i : (i+1)*plength+1])
+					//TODO make sure this actually works...
+					realp = append(realp[:(i)*20], append(s[:], realp[(i)*20:]...)...)
+					//fmt.Println(pieces[plength*i : (i+1)*plength+1])
+					//fmt.Println(s[:])
+					_ = s
+					phash <- 1
+				}(i)
+			}
+			<-phash
+
+			infos := struct {
+				piece_length int
+				pieces       string
+				files        []bt_file
+			}{
+				plength,
+				string(realp),
+				bt_files,
+			}
+			fmt.Println(len(realp))
+
+			var b bytes.Buffer
+			bencode.Marshal(&b, infos)
+			f.Write(b.Bytes())
+			f.Close()
+		}
 	}
+}
+
+type bt_file struct {
+	length int64
+	path   string
 }
 
 func reedWrite() {
@@ -146,7 +220,7 @@ func listenMultiCast() {
 			err := bencode.Unmarshal(bytes.NewBuffer(b[4:]), &r)
 			check(err)
 
-			for _, s := range secrets {
+			for s, _ := range folders {
 				if r.Share == sha1.Sum([]byte(s)) {
 					//spawn socket
 					//TODO make "known hosts"
@@ -193,18 +267,21 @@ func sendMultiCast() {
 	sock, err := net.DialUDP("udp", nil, addr)
 	check(err)
 	for {
-		buf := bytes.NewBuffer([]byte("DBIT"))
-		err := bencode.Marshal(buf, BCast{
-			"ping",
-			6667,
-			sha1.Sum([]byte(secrets[0])),
-			//FIXME not sure if Network() is sufficient
-			sha1.Sum([]byte(addr.Network())),
-		})
+		//broadcast each of our syncs
+		for s, _ := range folders {
+			buf := bytes.NewBuffer([]byte("DBIT"))
+			err := bencode.Marshal(buf, BCast{
+				"ping",
+				6667,
+				sha1.Sum([]byte(s)),
+				//FIXME not sure if Network() is sufficient
+				sha1.Sum([]byte(addr.Network())),
+			})
 
-		check(err)
-		_, err = sock.Write(buf.Bytes())
-		check(err)
+			check(err)
+			_, err = sock.Write(buf.Bytes())
+			check(err)
+		}
 		time.Sleep(2 * time.Second)
 	}
 }
