@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,10 +17,14 @@ import (
 	"time"
 )
 
-//secret : path
-var folders = make(map[string]string)
+var (
+	folders = make(map[string]string) //map[secret]absPath
+)
 
-const BLOCK_SIZE = 16 * 1024
+const (
+	BLOCK_SIZE   = 1 << 14 //2^14
+	PIECE_LENGTH = 1 << 18 //2^18
+)
 
 func check(err error) {
 	if err != nil {
@@ -28,7 +33,7 @@ func check(err error) {
 }
 
 //TODO watch changes on this file to reload it
-//TODO put these in home ~/.config/dbit/ for linux
+//TODO put these in home ~/.dbit/config for linux
 func parseConfig() {
 	f, err := ioutil.ReadFile("./test.conf")
 	check(err)
@@ -46,70 +51,75 @@ func parseConfig() {
 			f, err := os.Create("./" + s.Secret + ".torrent")
 			check(err)
 
-			var buf bytes.Buffer
-			bt_files := make([]bt_file, 0)
-			//TODO append metadata
+			//map[relativePath]bt_file
+			bt_files := make(map[string]bt_file)
 			//TODO potential bottleneck here, walk is slow -- but must be done somehow
 			//  it appears there are about 20 ways to do io in stdlib
 			filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
-				d, err := ioutil.ReadFile(path)
-				buf.Write(d)
-				bt_files = append(bt_files, bt_file{f.Size(), path})
+				btf, err := getFileInfo(path)
+				//err mostly for directories == no file
+				if err != nil {
+					return nil
+				}
+				//slice off sync abs path + /
+				relPath := path[len(s.Path)+1:]
+				bt_files[relPath] = btf
 				return nil
 			})
 
-			pieces := buf.Bytes()
-			var plength int
-			if len(pieces) < BLOCK_SIZE {
-				plength = len(pieces)
-			} else {
-				plength = BLOCK_SIZE
-			}
-
-			iters := len(pieces) / plength
-			//on the off chance of perfection...
-			if len(pieces)%plength > 0 {
-				iters += 1
-			}
-
-			phash := make(chan int, iters)
-			realp := make([]byte, iters*20)
-			for i := 0; i < iters; i++ {
-				//TODO need concurrency bad
-				go func(i int) {
-					s := sha1.Sum(pieces[plength*i : (i+1)*plength+1])
-					//TODO make sure this actually works...
-					realp = append(realp[:(i)*20], append(s[:], realp[(i)*20:]...)...)
-					//fmt.Println(pieces[plength*i : (i+1)*plength+1])
-					//fmt.Println(s[:])
-					_ = s
-					phash <- 1
-				}(i)
-			}
-			<-phash
-
-			infos := struct {
-				piece_length int
-				pieces       string
-				files        []bt_file
-			}{
-				plength,
-				string(realp),
-				bt_files,
-			}
-			fmt.Println(len(realp))
-
 			var b bytes.Buffer
-			bencode.Marshal(&b, infos)
+			bencode.Marshal(&b, bt_files)
 			f.Write(b.Bytes())
 			f.Close()
 		}
 	}
 }
 
+//func reloadSecretMeta(secret string, bt_files map[string]bt_file) map[string]bt_file {
+//}
+
+func getFileInfo(path string) (bt bt_file, err error) {
+	d, err := ioutil.ReadFile(path)
+	if err != nil {
+		return bt, err
+	}
+
+	//TODO compute this smarter, not just min(256k, len(file))
+	var plength int
+	if len(d) < PIECE_LENGTH {
+		plength = len(d)
+	} else {
+		plength = PIECE_LENGTH
+	}
+
+	iters := len(d) / plength
+	//on the off chance of perfection...
+	if len(d)%plength > 0 {
+		iters += 1
+	}
+	fmt.Println(iters, plength)
+
+	phash := make(chan int, iters)
+	pieces := make([]byte, iters*20)
+	for i := 0; i < iters; i++ {
+		//TODO need concurrency bad... maybe not
+		go func(i int) {
+			//FIXME min() not necessary, then it was...
+			s := sha1.Sum(d[plength*i : int(math.Min(float64(plength*(i+1)), float64(len(d))))])
+			//TODO make sure this actually works...
+			pieces = append(pieces[:(i)*20], append(s[:], pieces[(i)*20:]...)...)
+			phash <- 1
+		}(i)
+	}
+	<-phash
+	return bt_file{int64(len(d)), plength, string(pieces)}, nil
+}
+
+//SPEC theres a map[filename]these floating around
 type bt_file struct {
-	length int64
-	path   string
+	length       int64
+	piece_length int
+	pieces       string
 }
 
 func reedWrite() {
@@ -146,7 +156,7 @@ func reply(c *net.UDPConn, addr net.Addr, part int64) {
 	b := make([]byte, 16)
 	n, err := f.ReadAt(b, int64(part*16))
 	if n < len(b) && err == io.EOF {
-		//truncate []byte?
+		//TODO truncate []byte?
 	}
 	//go func() {
 	_, err = c.WriteTo(b, addr)

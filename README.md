@@ -12,4 +12,4 @@
 * uTP (cgo?)
 * use secret to get hosts to render web page to read data remotely (web)?
 
-* name ideas: bitlocker, torrsync
+* name ideas: bitlocker, torrsync, bitsafe, bitpound
