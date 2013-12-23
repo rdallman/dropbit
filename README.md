@@ -13,3 +13,4 @@
 * use secret to get hosts to render web page to read data remotely (web)?
 
 * name ideas: bitlocker, torrsync, bitsafe, bitpound
+* see what happens when editing same file in 2 places

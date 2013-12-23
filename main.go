@@ -4,7 +4,9 @@ import (
 	"bytes"
 	bencode "code.google.com/p/bencode-go"
 	"crypto/sha1"
+	"database/sql"
 	"encoding/json"
+	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"io/ioutil"
 	"math"
@@ -18,8 +20,13 @@ import (
 )
 
 var (
-	folders = make(map[string]string) //map[secret]absPath
+	shares = make(map[string]Share) //map[secret]share
 )
+
+type Share struct {
+	Path string
+	db   *sql.DB
+}
 
 const (
 	BLOCK_SIZE   = 1 << 14 //2^14
@@ -36,25 +43,38 @@ func check(err error) {
 //TODO put these in home ~/.dbit/config for linux
 func parseConfig() {
 	f, err := ioutil.ReadFile("./test.conf")
+	err = json.Unmarshal(f, &shares)
 	check(err)
-	shares := []struct {
-		Secret string
-		Path   string
-	}{}
-	json.Unmarshal(f, &shares)
 	//map secrets to absolute paths in mem to know what to do when we get one
-	for _, s := range shares {
-		folders[s.Secret] = s.Path
-		_, err := os.Open("./" + s.Secret)
-		//if this is a new share
-		if err != nil {
-			f, err := os.Create("./" + s.Secret + ".torrent")
+	for secret, s := range shares {
+		//already set up
+		newShare := false
+		if _, err := os.Stat("./" + secret + ".db"); os.IsNotExist(err) {
+			fmt.Println("new share")
+			newShare = true
+		}
+		if s.db == nil {
+			fmt.Println("no db")
+			db, err := sql.Open("sqlite3", "./"+secret+".db")
 			check(err)
-
-			//map[relativePath]bt_file
-			bt_files := make(map[string]bt_file)
+			s.db = db
+		}
+		if newShare {
 			//TODO potential bottleneck here, walk is slow -- but must be done somehow
 			//  it appears there are about 20 ways to do io in stdlib
+			//TODO time not in sync, they parse bencoding -- maybe a good idea?
+			_, err = s.db.Exec(
+				`CREATE TABLE files (
+          path TEXT NOT NULL PRIMARY KEY,
+          time TEXT NOT NULL,
+          data BLOB NOT NULL);`)
+			check(err)
+			tx, err := s.db.Begin()
+			check(err)
+			stmt, err := tx.Prepare("insert into files(path, time, data) values(?,?,?)")
+			check(err)
+			defer stmt.Close()
+
 			filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
 				btf, err := getFileInfo(path)
 				//err mostly for directories == no file
@@ -63,14 +83,14 @@ func parseConfig() {
 				}
 				//slice off sync abs path + /
 				relPath := path[len(s.Path)+1:]
-				bt_files[relPath] = btf
+				var b bytes.Buffer
+				err = bencode.Marshal(&b, btf)
+				check(err)
+				_, err = stmt.Exec(relPath, f.ModTime().String(), b.Bytes())
+				check(err)
 				return nil
 			})
-
-			var b bytes.Buffer
-			bencode.Marshal(&b, bt_files)
-			f.Write(b.Bytes())
-			f.Close()
+			tx.Commit()
 		}
 	}
 }
@@ -230,7 +250,7 @@ func listenMultiCast() {
 			err := bencode.Unmarshal(bytes.NewBuffer(b[4:]), &r)
 			check(err)
 
-			for s, _ := range folders {
+			for s, _ := range shares {
 				if r.Share == sha1.Sum([]byte(s)) {
 					//spawn socket
 					//TODO make "known hosts"
@@ -278,7 +298,7 @@ func sendMultiCast() {
 	check(err)
 	for {
 		//broadcast each of our syncs
-		for s, _ := range folders {
+		for s, _ := range shares {
 			buf := bytes.NewBuffer([]byte("DBIT"))
 			err := bencode.Marshal(buf, BCast{
 				"ping",
