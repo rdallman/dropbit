@@ -1,3 +1,14 @@
+//Copyright 2013
+//TODO Insert Go Modified BSD here
+
+//TODO this is messy as fuck, I know
+//step #1: make it work
+//step #2: make it fast and pretty
+//step #3: go outside
+//
+//current step:
+// [1] 2 3
+
 package main
 
 import (
@@ -12,7 +23,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	//"encoding/base32"
 	"fmt"
 	"net"
@@ -20,12 +30,20 @@ import (
 )
 
 var (
-	shares = make(map[string]Share) //map[secret]share
+	shares = make(map[string]share) //map[secret]share
 )
 
-type Share struct {
-	Path string
-	db   *sql.DB
+type share struct {
+	Path  string
+	Db    *sql.DB
+	peers map[string]net.Addr //map[port:ip]addr
+}
+
+//TODO WHY THE FUCK DOES THIS WORK?!?!?!?!??!?!
+var MYDB *sql.DB
+
+type Share interface {
+	metaShake(addr *net.UDPAddr)
 }
 
 const (
@@ -41,11 +59,12 @@ func check(err error) {
 
 //TODO watch changes on this file to reload it
 //TODO put these in home ~/.dbit/config for linux
+//for initial load / reloading config file
 func parseConfig() {
 	f, err := ioutil.ReadFile("./test.conf")
 	err = json.Unmarshal(f, &shares)
 	check(err)
-	//map secrets to absolute paths in mem to know what to do when we get one
+	//load up a db for each secret
 	for secret, s := range shares {
 		//already set up
 		newShare := false
@@ -53,31 +72,36 @@ func parseConfig() {
 			fmt.Println("new share")
 			newShare = true
 		}
-		if s.db == nil {
+		if s.Db == nil {
 			fmt.Println("no db")
 			db, err := sql.Open("sqlite3", "./"+secret+".db")
 			check(err)
-			s.db = db
+			s.Db = db
+			MYDB = db
 		}
 		if newShare {
+			fmt.Println("here")
 			//TODO potential bottleneck here, walk is slow -- but must be done somehow
 			//  it appears there are about 20 ways to do io in stdlib
-			//TODO time not in sync, they parse bencoding -- maybe a good idea?
-			_, err = s.db.Exec(
+			//TODO time not in sync db, they parse bencoding -- maybe a good idea?
+			//      allows: select * from files where time > x;  x = most recent, gets all new
+			_, err = s.Db.Exec(
 				`CREATE TABLE files (
           path TEXT NOT NULL PRIMARY KEY,
           time TEXT NOT NULL,
           data BLOB NOT NULL);`)
 			check(err)
-			tx, err := s.db.Begin()
+			//} // end newShare here
+			tx, err := s.Db.Begin()
 			check(err)
 			stmt, err := tx.Prepare("insert into files(path, time, data) values(?,?,?)")
 			check(err)
 			defer stmt.Close()
+			fmt.Println("here")
 
 			filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
 				btf, err := getFileInfo(path)
-				//err mostly for directories == no file
+				//err mostly for directories
 				if err != nil {
 					return nil
 				}
@@ -95,9 +119,6 @@ func parseConfig() {
 	}
 }
 
-//func reloadSecretMeta(secret string, bt_files map[string]bt_file) map[string]bt_file {
-//}
-
 func getFileInfo(path string) (bt bt_file, err error) {
 	d, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -105,24 +126,18 @@ func getFileInfo(path string) (bt bt_file, err error) {
 	}
 
 	//TODO compute this smarter, not just min(256k, len(file))
-	var plength int
-	if len(d) < PIECE_LENGTH {
-		plength = len(d)
-	} else {
-		plength = PIECE_LENGTH
-	}
+	plength := int(math.Min(float64(PIECE_LENGTH), float64(len(d))))
 
 	iters := len(d) / plength
 	//on the off chance of perfection...
 	if len(d)%plength > 0 {
 		iters += 1
 	}
-	fmt.Println(iters, plength)
 
 	phash := make(chan int, iters)
 	pieces := make([]byte, iters*20)
 	for i := 0; i < iters; i++ {
-		//TODO need concurrency bad... maybe not
+		//TODO need concurrency bad... maybe not, redundant channel?
 		go func(i int) {
 			//FIXME min() not necessary, then it was...
 			s := sha1.Sum(d[plength*i : int(math.Min(float64(plength*(i+1)), float64(len(d))))])
@@ -143,23 +158,23 @@ type bt_file struct {
 }
 
 func reedWrite() {
-	//TODO guess locally if recognize myself different? should be non-issue
+	//TODO guess locally I recognize myself different? should be non-issue
 	addr, err := net.ResolveUDPAddr("udp", "192.168.1.64:6667")
 	check(err)
 	sock, err := net.ListenUDP("udp", addr)
 	check(err)
 	for {
 		b := make([]byte, 4096)
-		_, c, err := sock.ReadFrom(b)
+		_, _, err := sock.ReadFrom(b)
 		check(err)
 		fmt.Println(string(b))
-		var r bt_req
-		err = bencode.Unmarshal(bytes.NewBuffer(b), &r)
-		switch r.req_type {
-		case 0:
-			reply(sock, c, r.piece)
-		case 1:
-		}
+		//var r bt_req
+		//err = bencode.Unmarshal(bytes.NewBuffer(b), &r)
+		//switch r.req_type {
+		//case 0:
+		//reply(sock, c, r.piece)
+		//case 1:
+		//}
 		//sock.WriteTo(b, c)
 	}
 }
@@ -187,18 +202,53 @@ func reply(c *net.UDPConn, addr net.Addr, part int64) {
 	//<-ch
 }
 
-type bt_req struct {
-	req_type int
-	filename string
-	piece    int64
+type tracker struct {
+	m       string
+	files   []t_file
+	port    int
+	ip      [4]byte
+	peer_id [20]byte
+	peers   []string
 }
 
-func request(c *net.UDPConn, part int64) {
+//TODO eh temporary, but may stick w/ new name
+type t_file struct {
+	path string
+	time string
+}
+
+//analagous to getTracker
+//TODO do this recursively
+//gotta find peers first
+//TODO no central tracker?
+func (s *share) metaShake(addr *net.UDPAddr) {
+	c, err := net.DialUDP("udp", nil, addr)
+	check(err)
+
+	//TODO see myself doing this a lot... extract func
+	fmt.Println("I NEED MY DB")
+	rows, err := MYDB.Query("SELECT path FROM files")
+	defer rows.Close()
+	files := make([]t_file, 0)
+	for rows.Next() {
+		var path, time string
+		rows.Scan(&path, &time)
+		files = append(files, t_file{path, time})
+	}
+
+	peers := make([]string, 0)
+	for p, _ := range s.peers {
+		peers = append(peers, p)
+	}
+
 	var b bytes.Buffer
-	err := bencode.Marshal(&b, bt_req{
-		0,
-		"shit",
-		part,
+	err = bencode.Marshal(&b, tracker{
+		"meta_shake",
+		files,
+		6667,
+		[4]byte{192, 168, 1, 64},
+		sha1.Sum([]byte("192.168.1.64:6667")), //FIXME config?
+		peers,
 	})
 	check(err)
 	_, err = c.Write(b.Bytes())
@@ -209,16 +259,10 @@ func request(c *net.UDPConn, part int64) {
 }
 
 func writeReed(addr *net.UDPAddr, port int) {
-	a, err := net.ResolveUDPAddr("udp", addr.IP.String()+":"+strconv.Itoa(port))
-	c, err := net.DialUDP("udp", nil, a)
-	check(err)
-	request(c, 0)
-
 	//TODO reduce below to only shoot needed chunks
 	//receiver sends needed chunk, reply with only that
 	//TODO figure out if reading or writing
 	//write out all chunks of a file
-
 }
 
 //TODO definitely use this
@@ -242,7 +286,7 @@ func listenMultiCast() {
 	sock, err := net.ListenMulticastUDP("udp", nil, addr)
 	check(err)
 	for {
-		b := make([]byte, 4096)
+		b := make([]byte, 256)
 		_, addr, err := sock.ReadFrom(b)
 		check(err)
 		if string(b[:4]) == "DBIT" {
@@ -250,29 +294,22 @@ func listenMultiCast() {
 			err := bencode.Unmarshal(bytes.NewBuffer(b[4:]), &r)
 			check(err)
 
-			for s, _ := range shares {
-				if r.Share == sha1.Sum([]byte(s)) {
-					//spawn socket
-					//TODO make "known hosts"
-					//  if unknown
-					//    add
-					//  else
-					//    nothing
-					//
+			for secret, s := range shares {
+				if r.Share == sha1.Sum([]byte(secret)) {
 					//TODO polling "known hosts" periodically?
 					//TODO send broadcast to "known hosts" when change happens? (fsnotify)
-					writeReed(addr.(*net.UDPAddr), r.Port)
+					if s.peers == nil {
+						s.peers = make(map[string]net.Addr)
+					}
+					_, known := s.peers[addr.Network()]
+					if !known {
+						s.peers[addr.Network()] = addr
+						a := addr.(*net.UDPAddr)
+						a.Port = r.Port
+						s.metaShake(a)
+					}
 				}
 			}
-			////this computes hash of most recent change in directory, recursively
-			//h := sha1.New()
-			//filepath.Walk("./", func(path string, f os.FileInfo, err error) error {
-			//io.WriteString(h, f.ModTime().String())
-			//return nil
-			//})
-
-			//fhash := h.Sum(nil)
-			//_ = fhash
 		}
 	}
 }
@@ -317,10 +354,9 @@ func sendMultiCast() {
 }
 
 func main() {
-	go reedWrite()
+	parseConfig()
 	go listenMultiCast()
 	go sendMultiCast()
-	parseConfig()
 	for {
 		time.Sleep(100 * time.Millisecond)
 	}
