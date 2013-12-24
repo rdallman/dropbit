@@ -88,13 +88,13 @@ func loadShare(secret string, s share) {
 		check(err)
 
 		filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
-			fmt.Println(path)
 			btf, err := getFileInfo(path)
 			fmt.Println(path)
-			//err mostly for directories
-			//slice off sync abs path + /
-			//relPath := path[len(s.Path)+1:]
-			relPath := path
+			//err here = directory -- we don't need these
+			if err != nil {
+				return nil
+			}
+			relPath := path[len(s.Path)+1:]
 			var b bytes.Buffer
 			err = bencode.Marshal(&b, btf)
 			check(err)
@@ -144,12 +144,11 @@ func getFileInfo(path string) (bt bt_file, err error) {
 	if len(d)%plength > 0 {
 		iters += 1
 	}
-	//on the off chance of perfection...
 
 	phash := make(chan int, iters)
 	pieces := make([]byte, iters*20)
 	for i := 0; i < iters; i++ {
-		//TODO need concurrency bad... maybe not, redundant channel?
+		//TODO redundant channel?
 		go func(i int) {
 			//FIXME min() not necessary, then it was...
 			s := sha1.Sum(d[plength*i : int(math.Min(float64(plength*(i+1)), float64(len(d))))])
@@ -170,24 +169,25 @@ type bt_file struct {
 }
 
 func reedWrite() {
-	//TODO guess locally I recognize myself different? should be non-issue
+	//TODO guess locally I recognize myself different? should be non-issue; ifconfig address for now
 	addr, err := net.ResolveUDPAddr("udp", "192.168.1.64:6667")
 	check(err)
 	sock, err := net.ListenUDP("udp", addr)
 	check(err)
 	for {
 		b := make([]byte, 4096)
-		_, _, err := sock.ReadFrom(b)
+		_, c, err := sock.ReadFrom(b)
 		check(err)
 		fmt.Println(string(b))
-		//var r bt_req
-		//err = bencode.Unmarshal(bytes.NewBuffer(b), &r)
-		//switch r.req_type {
-		//case 0:
-		//reply(sock, c, r.piece)
-		//case 1:
-		//}
-		//sock.WriteTo(b, c)
+		var t tracker
+		err = bencode.Unmarshal(bytes.NewBuffer(b), &t)
+		for _, s := range shares {
+			switch t.m {
+			case "meta_shake":
+				metaShake(c)
+			}
+			//sock.WriteTo(b, c)
+		}
 	}
 }
 
@@ -263,6 +263,7 @@ func (s *share) metaShake(addr *net.UDPAddr) {
 		sha1.Sum([]byte("192.168.1.64:6667")), //FIXME config?
 		peers,
 	})
+	fmt.Println(b.String())
 	check(err)
 	_, err = c.Write(b.Bytes())
 	check(err)
@@ -312,13 +313,16 @@ func listenMultiCast() {
 					//TODO polling "known hosts" periodically?
 					//TODO send broadcast to "known hosts" when change happens? (fsnotify)
 					if s.peers == nil {
-						s.peers = make(map[string]net.Addr)
+						//TODO figure out a better way to add db and peers... this is annoying AF
+						shares[secret] = share{s.Path, s.Db, make(map[string]net.Addr)}
+						s = shares[secret]
 					}
-					_, known := s.peers[addr.Network()]
+					a := addr.(*net.UDPAddr)
+					a.Port = r.Port
+					fmt.Println(a.String())
+					_, known := s.peers[a.String()]
 					if !known {
-						a := addr.(*net.UDPAddr)
-						a.Port = r.Port
-						s.peers[a.Network()] = a
+						s.peers[a.String()] = a
 						s.metaShake(a)
 					}
 				}
@@ -368,9 +372,9 @@ func sendMultiCast() {
 
 func main() {
 	parseConfig()
-	parseConfig()
 	go listenMultiCast()
 	go sendMultiCast()
+	go reedWrite()
 	for {
 		time.Sleep(100 * time.Millisecond)
 	}
