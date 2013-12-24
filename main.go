@@ -39,9 +39,6 @@ type share struct {
 	peers map[string]net.Addr //map[port:ip]addr
 }
 
-//TODO WHY THE FUCK DOES THIS WORK?!?!?!?!??!?!
-var MYDB *sql.DB
-
 type Share interface {
 	metaShake(addr *net.UDPAddr)
 }
@@ -57,64 +54,76 @@ func check(err error) {
 	}
 }
 
+func loadShare(secret string, s share) {
+	newShare := false
+	//if file doesn't exist, need to drop some tables
+	//has to be done here because sql.Open will make a file
+	if _, err := os.Stat(secret + ".db"); os.IsNotExist(err) {
+		fmt.Println("new share")
+		newShare = true
+	}
+	//hopefully reload config will not reload the database
+	if shares[secret].Db == nil {
+		fmt.Println("no db")
+		db, err := sql.Open("sqlite3", secret+".db")
+		check(err)
+		shares[secret] = share{s.Path, db, s.peers}
+	}
+	//drop some tables
+	if newShare {
+		//TODO potential bottleneck here, walk is slow -- but must be done somehow
+		//  it appears there are about 20 ways to do io in stdlib
+		//TODO time not in sync db, they parse bencoding -- maybe a good idea?
+		//      allows: select * from files where time > x;  x = most recent, gets all new
+		db := shares[secret].Db
+		_, err := db.Exec(
+			`CREATE TABLE files (
+          path TEXT NOT NULL PRIMARY KEY,
+          time TEXT NOT NULL,
+          data BLOB NOT NULL);`)
+		check(err)
+		//} // end newShare here
+		stmt, err := db.Prepare("insert into files(path, time, data) values(?,?,?)")
+
+		check(err)
+
+		filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
+			fmt.Println(path)
+			btf, err := getFileInfo(path)
+			fmt.Println(path)
+			//err mostly for directories
+			//slice off sync abs path + /
+			//relPath := path[len(s.Path)+1:]
+			relPath := path
+			var b bytes.Buffer
+			err = bencode.Marshal(&b, btf)
+			check(err)
+			_, err = stmt.Exec(relPath, f.ModTime().String(), b.Bytes())
+			check(err)
+			return nil
+		})
+		fmt.Println("never got here")
+	}
+}
+
 //TODO watch changes on this file to reload it
 //TODO put these in home ~/.dbit/config for linux
 //for initial load / reloading config file
 func parseConfig() {
 	f, err := ioutil.ReadFile("./test.conf")
-	err = json.Unmarshal(f, &shares)
+	if shares == nil {
+		shares = make(map[string]share)
+	}
+	cshares := make(map[string]share)
+	err = json.Unmarshal(f, &cshares)
 	check(err)
-	//load up a db for each secret
-	for secret, s := range shares {
-		//already set up
-		newShare := false
-		if _, err := os.Stat("./" + secret + ".db"); os.IsNotExist(err) {
-			fmt.Println("new share")
-			newShare = true
-		}
-		if s.Db == nil {
-			fmt.Println("no db")
-			db, err := sql.Open("sqlite3", "./"+secret+".db")
-			check(err)
-			s.Db = db
-			MYDB = db
-		}
-		if newShare {
-			fmt.Println("here")
-			//TODO potential bottleneck here, walk is slow -- but must be done somehow
-			//  it appears there are about 20 ways to do io in stdlib
-			//TODO time not in sync db, they parse bencoding -- maybe a good idea?
-			//      allows: select * from files where time > x;  x = most recent, gets all new
-			_, err = s.Db.Exec(
-				`CREATE TABLE files (
-          path TEXT NOT NULL PRIMARY KEY,
-          time TEXT NOT NULL,
-          data BLOB NOT NULL);`)
-			check(err)
-			//} // end newShare here
-			tx, err := s.Db.Begin()
-			check(err)
-			stmt, err := tx.Prepare("insert into files(path, time, data) values(?,?,?)")
-			check(err)
-			defer stmt.Close()
-			fmt.Println("here")
-
-			filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
-				btf, err := getFileInfo(path)
-				//err mostly for directories
-				if err != nil {
-					return nil
-				}
-				//slice off sync abs path + /
-				relPath := path[len(s.Path)+1:]
-				var b bytes.Buffer
-				err = bencode.Marshal(&b, btf)
-				check(err)
-				_, err = stmt.Exec(relPath, f.ModTime().String(), b.Bytes())
-				check(err)
-				return nil
-			})
-			tx.Commit()
+	//TODO check equality of some traits to see if we need a reload
+	// ...once the config actually has some settings
+	for secret, s := range cshares {
+		_, ok := shares[secret]
+		if !ok {
+			fmt.Println("added")
+			loadShare(secret, s)
 		}
 	}
 }
@@ -128,11 +137,14 @@ func getFileInfo(path string) (bt bt_file, err error) {
 	//TODO compute this smarter, not just min(256k, len(file))
 	plength := int(math.Min(float64(PIECE_LENGTH), float64(len(d))))
 
+	if plength == 0 {
+		return bt, err
+	}
 	iters := len(d) / plength
-	//on the off chance of perfection...
 	if len(d)%plength > 0 {
 		iters += 1
 	}
+	//on the off chance of perfection...
 
 	phash := make(chan int, iters)
 	pieces := make([]byte, iters*20)
@@ -224,17 +236,18 @@ type t_file struct {
 func (s *share) metaShake(addr *net.UDPAddr) {
 	c, err := net.DialUDP("udp", nil, addr)
 	check(err)
+	fmt.Println("shaking")
 
 	//TODO see myself doing this a lot... extract func
-	fmt.Println("I NEED MY DB")
-	rows, err := MYDB.Query("SELECT path FROM files")
-	defer rows.Close()
+	rows, err := s.Db.Query("SELECT path, time FROM files")
+	check(err)
 	files := make([]t_file, 0)
 	for rows.Next() {
 		var path, time string
 		rows.Scan(&path, &time)
 		files = append(files, t_file{path, time})
 	}
+	rows.Close()
 
 	peers := make([]string, 0)
 	for p, _ := range s.peers {
@@ -303,9 +316,9 @@ func listenMultiCast() {
 					}
 					_, known := s.peers[addr.Network()]
 					if !known {
-						s.peers[addr.Network()] = addr
 						a := addr.(*net.UDPAddr)
 						a.Port = r.Port
+						s.peers[a.Network()] = a
 						s.metaShake(a)
 					}
 				}
@@ -354,6 +367,7 @@ func sendMultiCast() {
 }
 
 func main() {
+	parseConfig()
 	parseConfig()
 	go listenMultiCast()
 	go sendMultiCast()
