@@ -184,7 +184,7 @@ func reedWrite() {
 		for _, s := range shares {
 			switch t.m {
 			case "meta_shake":
-				metaShake(c)
+				s.metaShake(c.(*net.UDPAddr))
 			}
 			//sock.WriteTo(b, c)
 		}
@@ -218,7 +218,6 @@ type tracker struct {
 	m       string
 	files   []t_file
 	port    int
-	ip      [4]byte
 	peer_id [20]byte
 	peers   []string
 }
@@ -259,7 +258,6 @@ func (s *share) metaShake(addr *net.UDPAddr) {
 		"meta_shake",
 		files,
 		6667,
-		[4]byte{192, 168, 1, 64},
 		sha1.Sum([]byte("192.168.1.64:6667")), //FIXME config?
 		peers,
 	})
