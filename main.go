@@ -1,5 +1,5 @@
 //Copyright 2013
-//TODO Insert Go Modified BSD here
+//TODO Insert Go Modified BSD License here
 
 //TODO this is messy as fuck, I know
 //step #1: make it work
@@ -31,16 +31,21 @@ import (
 
 var (
 	shares = make(map[string]share) //map[secret]share
+	port   = 6667
 )
 
 type share struct {
-	Path  string
-	Db    *sql.DB
-	peers map[string]net.Addr //map[port:ip]addr
+	Secret string
+	Path   string
+	Db     *sql.DB
+	peers  map[string]net.Addr //map[port:ip]addr
 }
 
 type Share interface {
-	metaShake(addr *net.UDPAddr)
+	sendMetaShake(addr *net.UDPAddr)
+	receiveMetaShake()
+	sendping(addr *net.UDPAddr)
+	getping()
 }
 
 const (
@@ -51,6 +56,37 @@ const (
 func check(err error) {
 	if err != nil {
 		fmt.Println(err)
+	}
+}
+
+//bencode doesn't care about capitalization... should we?
+type Ping struct {
+	M     string   `m`
+	Port  int      `port`
+	Share [20]byte `share`
+	Peer  [20]byte `peer`
+}
+
+type Shake struct {
+	m       string
+	files   []t_file
+	port    int
+	peer_id [20]byte
+	peers   []string
+}
+
+type Request struct {
+}
+
+type Reply struct {
+}
+
+func newShare(secret, path string) share {
+	return share{
+		secret,
+		path,
+		nil,
+		make(map[string]net.Addr),
 	}
 }
 
@@ -67,7 +103,7 @@ func loadShare(secret string, s share) {
 		fmt.Println("no db")
 		db, err := sql.Open("sqlite3", secret+".db")
 		check(err)
-		shares[secret] = share{s.Path, db, s.peers}
+		shares[secret] = share{Path: s.Path, Db: db, peers: s.peers}
 	}
 	//drop some tables
 	if newShare {
@@ -102,7 +138,6 @@ func loadShare(secret string, s share) {
 			check(err)
 			return nil
 		})
-		fmt.Println("never got here")
 	}
 }
 
@@ -123,11 +158,14 @@ func parseConfig() {
 		_, ok := shares[secret]
 		if !ok {
 			fmt.Println("added")
+			//TODO tricky here...
+			s = newShare(secret, s.Path)
 			loadShare(secret, s)
 		}
 	}
 }
 
+//uses local absolute path, generates metadata on new file
 func getFileInfo(path string) (bt bt_file, err error) {
 	d, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -152,7 +190,6 @@ func getFileInfo(path string) (bt bt_file, err error) {
 		go func(i int) {
 			//FIXME min() not necessary, then it was...
 			s := sha1.Sum(d[plength*i : int(math.Min(float64(plength*(i+1)), float64(len(d))))])
-			//TODO make sure this actually works...
 			pieces = append(pieces[:(i)*20], append(s[:], pieces[(i)*20:]...)...)
 			phash <- 1
 		}(i)
@@ -168,25 +205,51 @@ type bt_file struct {
 	pieces       string
 }
 
+//listen for pings, hand back metadata (encrypt shake w/ key eventually)
 func reedWrite() {
-	//TODO guess locally I recognize myself different? should be non-issue; ifconfig address for now
-	addr, err := net.ResolveUDPAddr("udp", "192.168.1.64:6667")
+	//TODO get real IP; ifconfig address for now
+	me, err := net.ResolveUDPAddr("udp", "192.168.1.64:6667")
 	check(err)
-	sock, err := net.ListenUDP("udp", addr)
+	sock, err := net.ListenUDP("udp", me)
 	check(err)
 	for {
+		//this whole size thing is probably bad
 		b := make([]byte, 4096)
-		_, c, err := sock.ReadFrom(b)
+		_, addr, err := sock.ReadFrom(b)
 		check(err)
-		fmt.Println(string(b))
-		var t tracker
-		err = bencode.Unmarshal(bytes.NewBuffer(b), &t)
-		for _, s := range shares {
-			switch t.m {
-			case "meta_shake":
-				s.metaShake(c.(*net.UDPAddr))
+		if string(b[:4]) == "DBIT" {
+			var p Ping
+			err := bencode.Unmarshal(bytes.NewBuffer(b[4:]), &p)
+			check(err)
+
+			for secret, s := range shares {
+				if p.Share == sha1.Sum([]byte(secret)) {
+					//TODO polling "known hosts" periodically?
+					//TODO send broadcast to "known hosts" when change happens? (fsnotify)
+					//if s.peers == nil {
+					//FIXME potentially solved this new map issue
+					//shares[secret] = share{Path: s.Path, Db: s.Db, make(map[string]net.Addr)}
+					//s = shares[secret]
+					//}
+					a := addr.(*net.UDPAddr)
+					a.Port = p.Port
+					fmt.Println(a.String())
+					_, known := s.peers[a.String()]
+					if !known {
+						s.peers[a.String()] = a
+						s.metaShake(me, a)
+					}
+				}
 			}
-			//sock.WriteTo(b, c)
+			//fmt.Println(string(b))
+			//var t tracker
+			//err = bencode.Unmarshal(bytes.NewBuffer(b), &t)
+			//for _, s := range shares {
+			//switch t.m {
+			//case "meta_shake":
+			//s.metaShake(c.(*net.UDPAddr))
+			//}
+			////sock.WriteTo(b, c)
 		}
 	}
 }
@@ -214,29 +277,58 @@ func reply(c *net.UDPConn, addr net.Addr, part int64) {
 	//<-ch
 }
 
-type tracker struct {
-	m       string
-	files   []t_file
-	port    int
-	peer_id [20]byte
-	peers   []string
-}
-
 //TODO eh temporary, but may stick w/ new name
 type t_file struct {
 	path string
 	time string
 }
 
+func (s *share) sendPing(secret string, target *net.UDPAddr) {
+	// s := shares[secret]
+	// write(ping)
+	// s.listenForMeta()
+}
+
+//always be doing this
+func (s *share) listenForPing(target *net.UDPAddr) {
+	// read(ping)
+	// !known? add
+	// s := shares[secret]
+	// write(s.sendMeta(you))
+	// s.listenForMeta()
+}
+
+func (s *share) listenForMeta(target *net.UDPAddr) {
+	//read(meta)
+	// unmarshal(&youMeta)
+	// for f in files
+	//   hash(you) ==? hash(me)
+	//    yours > mine
+	//      have = 0
+	//      sql.write(f, yourMeta)
+	//      request(f)
+}
+
+//TODO listen for requests...
+// uh session keys and send the secret each time?
+// know the secret for each request we get?
+
+func (s *share) metaShake(me, you *net.UDPAddr) {
+	conn, err := net.DialUDP("udp", me, you)
+	check(err)
+	b := createMetaShake(s)
+	_, err = conn.Write(b)
+	check(err)
+	r := make([]byte, 4096)
+	_, err = conn.Read(r)
+	fmt.Println(string(r))
+}
+
 //analagous to getTracker
 //TODO do this recursively
 //gotta find peers first
 //TODO no central tracker?
-func (s *share) metaShake(addr *net.UDPAddr) {
-	c, err := net.DialUDP("udp", nil, addr)
-	check(err)
-	fmt.Println("shaking")
-
+func createMetaShake(s *share) []byte {
 	//TODO see myself doing this a lot... extract func
 	rows, err := s.Db.Query("SELECT path, time FROM files")
 	check(err)
@@ -254,20 +346,14 @@ func (s *share) metaShake(addr *net.UDPAddr) {
 	}
 
 	var b bytes.Buffer
-	err = bencode.Marshal(&b, tracker{
+	err = bencode.Marshal(&b, Shake{
 		"meta_shake",
 		files,
 		6667,
 		sha1.Sum([]byte("192.168.1.64:6667")), //FIXME config?
 		peers,
 	})
-	fmt.Println(b.String())
-	check(err)
-	_, err = c.Write(b.Bytes())
-	check(err)
-	r := make([]byte, 4096)
-	_, err = c.Read(r)
-	fmt.Println(string(r))
+	return b.Bytes()
 }
 
 func writeReed(addr *net.UDPAddr, port int) {
@@ -302,7 +388,7 @@ func listenMultiCast() {
 		_, addr, err := sock.ReadFrom(b)
 		check(err)
 		if string(b[:4]) == "DBIT" {
-			var r BCast
+			var r Ping
 			err := bencode.Unmarshal(bytes.NewBuffer(b[4:]), &r)
 			check(err)
 
@@ -310,18 +396,20 @@ func listenMultiCast() {
 				if r.Share == sha1.Sum([]byte(secret)) {
 					//TODO polling "known hosts" periodically?
 					//TODO send broadcast to "known hosts" when change happens? (fsnotify)
-					if s.peers == nil {
-						//TODO figure out a better way to add db and peers... this is annoying AF
-						shares[secret] = share{s.Path, s.Db, make(map[string]net.Addr)}
-						s = shares[secret]
-					}
+
+					//if s.peers == nil {
+					////TODO figure out a better way to add db and peers... this is annoying AF
+					//shares[secret] = share{s.Path, s.Db, make(map[string]net.Addr)}
+					//s = shares[secret]
+					//}
 					a := addr.(*net.UDPAddr)
 					a.Port = r.Port
 					fmt.Println(a.String())
 					_, known := s.peers[a.String()]
 					if !known {
 						s.peers[a.String()] = a
-						s.metaShake(a)
+						fmt.Println(s.peers)
+						//TODO PING
 					}
 				}
 			}
@@ -329,11 +417,18 @@ func listenMultiCast() {
 	}
 }
 
-type BCast struct {
-	M     string   `m`
-	Port  int      `port`
-	Share [20]byte `share`
-	Peer  [20]byte `peer`
+func (s *share) Ping(secret string) []byte {
+	buf := bytes.NewBuffer([]byte("DBIT"))
+	err := bencode.Marshal(buf, Ping{
+		"ping",
+		6667,
+		sha1.Sum([]byte(secret)),
+		//FIXME not sure if Network() is sufficient
+		sha1.Sum([]byte("192.168.1.64:6667")),
+	})
+	check(err)
+
+	return buf.Bytes()
 }
 
 //key:
@@ -350,18 +445,10 @@ func sendMultiCast() {
 	check(err)
 	for {
 		//broadcast each of our syncs
-		for s, _ := range shares {
-			buf := bytes.NewBuffer([]byte("DBIT"))
-			err := bencode.Marshal(buf, BCast{
-				"ping",
-				6667,
-				sha1.Sum([]byte(s)),
-				//FIXME not sure if Network() is sufficient
-				sha1.Sum([]byte(addr.Network())),
-			})
+		for secret, s := range shares {
+			b := s.Ping(secret)
 
-			check(err)
-			_, err = sock.Write(buf.Bytes())
+			_, err = sock.Write(b)
 			check(err)
 		}
 		time.Sleep(2 * time.Second)
@@ -369,6 +456,7 @@ func sendMultiCast() {
 }
 
 func main() {
+	fmt.Printf("%d", time.Now().Unix())
 	parseConfig()
 	go listenMultiCast()
 	go sendMultiCast()
