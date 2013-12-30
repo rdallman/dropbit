@@ -98,21 +98,37 @@ for piece:
 sample:
 
 (discovery)
+
 Shake         -> <-       Shake
+
 RequestMeta   ->
+
 RequestMeta   ->          (can also RequestMeta)
+
 ...
+
                  <-       PieceMeta
+
                  <-       PieceMeta
+
                  ...
+
 Request       ->
+
 Request       ->
+
 ...
+
                  <-       Reply
+
                  <-       Reply
+
                  ...
+
 Have/Cancel   ->
+
 Have/Cancel   ->
+
 ...
 
 ##### Caveats:
