@@ -16,13 +16,11 @@ import (
 	bencode "code.google.com/p/bencode-go"
 	"crypto/sha1"
 	"database/sql"
-	"encoding/json"
 	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"io/ioutil"
 	"math"
 	"os"
-	"path/filepath"
 	//"encoding/base32"
 	"fmt"
 	"net"
@@ -41,13 +39,6 @@ type share struct {
 	peers  map[string]net.Addr //map[port:ip]addr
 }
 
-type Share interface {
-	sendMetaShake(addr *net.UDPAddr)
-	receiveMetaShake()
-	sendping(addr *net.UDPAddr)
-	getping()
-}
-
 const (
 	BLOCK_SIZE   = 1 << 14 //2^14
 	PIECE_LENGTH = 1 << 18 //2^18
@@ -59,26 +50,48 @@ func check(err error) {
 	}
 }
 
-//bencode doesn't care about capitalization... should we?
 type Ping struct {
-	M     string   `m`
-	Port  int      `port`
-	Share [20]byte `share`
-	Peer  [20]byte `peer`
+	M     string `m`
+	Port  int    `port`
+	Share string `share`
+	Peer  string `peer`
 }
 
 type Shake struct {
-	m       string
-	files   []t_file
-	port    int
-	peer_id [20]byte
-	peers   []string
+	M     string            `m`
+	Port  int               `port`
+	Share string            `share`
+	Peer  string            `peer`
+	Files map[string]string `files` //map[filename]hash of info
+	Peers []string          `peers`
 }
 
+//TODO associate port w/ file? leave open until everybody who needs it
+//is done and then move on to the next file? just open multiple ports at a time...
+
+//request with index, begin & length set to -1 requests torrent for File
 type Request struct {
+	M      string `m`
+	Port   int    `port`
+	Share  string `share`
+	Peer   string `peer`
+	File   string `file`
+	Index  int64  `index` //offset of piece
+	Begin  int64  `begin` //offset w/i piece
+	Length int64  `offset`
 }
 
-type Reply struct {
+//piece with index & being set to -1 means Piece is a .torrent for File
+//TODO when updated file JUST SEND THIS, EL CHEAPO
+type Piece struct {
+	M     string `m`
+	Port  int    `port`
+	Share string `share`
+	Peer  string `peer`
+	File  string `file`
+	Index int64  `index`
+	Begin int64  `begin`
+	Piece []byte `piece`
 }
 
 func newShare(secret, path string) share {
@@ -90,82 +103,7 @@ func newShare(secret, path string) share {
 	}
 }
 
-func loadShare(secret string, s share) {
-	newShare := false
-	//if file doesn't exist, need to drop some tables
-	//has to be done here because sql.Open will make a file
-	if _, err := os.Stat(secret + ".db"); os.IsNotExist(err) {
-		fmt.Println("new share")
-		newShare = true
-	}
-	//hopefully reload config will not reload the database
-	if shares[secret].Db == nil {
-		fmt.Println("no db")
-		db, err := sql.Open("sqlite3", secret+".db")
-		check(err)
-		shares[secret] = share{Path: s.Path, Db: db, peers: s.peers}
-	}
-	//drop some tables
-	if newShare {
-		//TODO potential bottleneck here, walk is slow -- but must be done somehow
-		//  it appears there are about 20 ways to do io in stdlib
-		//TODO time not in sync db, they parse bencoding -- maybe a good idea?
-		//      allows: select * from files where time > x;  x = most recent, gets all new
-		db := shares[secret].Db
-		_, err := db.Exec(
-			`CREATE TABLE files (
-          path TEXT NOT NULL PRIMARY KEY,
-          time TEXT NOT NULL,
-          data BLOB NOT NULL);`)
-		check(err)
-		//} // end newShare here
-		stmt, err := db.Prepare("insert into files(path, time, data) values(?,?,?)")
-
-		check(err)
-
-		filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
-			btf, err := getFileInfo(path)
-			fmt.Println(path)
-			//err here = directory -- we don't need these
-			if err != nil {
-				return nil
-			}
-			relPath := path[len(s.Path)+1:]
-			var b bytes.Buffer
-			err = bencode.Marshal(&b, btf)
-			check(err)
-			_, err = stmt.Exec(relPath, f.ModTime().String(), b.Bytes())
-			check(err)
-			return nil
-		})
-	}
-}
-
-//TODO watch changes on this file to reload it
-//TODO put these in home ~/.dbit/config for linux
-//for initial load / reloading config file
-func parseConfig() {
-	f, err := ioutil.ReadFile("./test.conf")
-	if shares == nil {
-		shares = make(map[string]share)
-	}
-	cshares := make(map[string]share)
-	err = json.Unmarshal(f, &cshares)
-	check(err)
-	//TODO check equality of some traits to see if we need a reload
-	// ...once the config actually has some settings
-	for secret, s := range cshares {
-		_, ok := shares[secret]
-		if !ok {
-			fmt.Println("added")
-			//TODO tricky here...
-			s = newShare(secret, s.Path)
-			loadShare(secret, s)
-		}
-	}
-}
-
-//uses local absolute path, generates metadata on new file
+//uses local absolute path, generates metadata for file
 func getFileInfo(path string) (bt bt_file, err error) {
 	d, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -223,7 +161,7 @@ func reedWrite() {
 			check(err)
 
 			for secret, s := range shares {
-				if p.Share == sha1.Sum([]byte(secret)) {
+				if p.Share == fmt.Sprintf("%s", sha1.Sum([]byte(secret))) {
 					//TODO polling "known hosts" periodically?
 					//TODO send broadcast to "known hosts" when change happens? (fsnotify)
 					//if s.peers == nil {
@@ -233,11 +171,10 @@ func reedWrite() {
 					//}
 					a := addr.(*net.UDPAddr)
 					a.Port = p.Port
-					fmt.Println(a.String())
 					_, known := s.peers[a.String()]
 					if !known {
 						s.peers[a.String()] = a
-						s.metaShake(me, a)
+						s.sendMeta(a)
 					}
 				}
 			}
@@ -277,12 +214,6 @@ func reply(c *net.UDPConn, addr net.Addr, part int64) {
 	//<-ch
 }
 
-//TODO eh temporary, but may stick w/ new name
-type t_file struct {
-	path string
-	time string
-}
-
 func (s *share) sendPing(secret string, target *net.UDPAddr) {
 	// s := shares[secret]
 	// write(ping)
@@ -313,15 +244,11 @@ func (s *share) listenForMeta(target *net.UDPAddr) {
 // uh session keys and send the secret each time?
 // know the secret for each request we get?
 
-func (s *share) metaShake(me, you *net.UDPAddr) {
-	conn, err := net.DialUDP("udp", me, you)
-	check(err)
+func (s *share) sendMeta(you *net.UDPAddr) {
+	conn, err := net.DialUDP("udp", nil, you)
 	b := createMetaShake(s)
 	_, err = conn.Write(b)
 	check(err)
-	r := make([]byte, 4096)
-	_, err = conn.Read(r)
-	fmt.Println(string(r))
 }
 
 //analagous to getTracker
@@ -330,29 +257,23 @@ func (s *share) metaShake(me, you *net.UDPAddr) {
 //TODO no central tracker?
 func createMetaShake(s *share) []byte {
 	//TODO see myself doing this a lot... extract func
-	rows, err := s.Db.Query("SELECT path, time FROM files")
-	check(err)
-	files := make([]t_file, 0)
-	for rows.Next() {
-		var path, time string
-		rows.Scan(&path, &time)
-		files = append(files, t_file{path, time})
-	}
-	rows.Close()
+	files := s.getMyFiles()
 
 	peers := make([]string, 0)
 	for p, _ := range s.peers {
 		peers = append(peers, p)
 	}
 
-	var b bytes.Buffer
-	err = bencode.Marshal(&b, Shake{
-		"meta_shake",
-		files,
+	b := bytes.NewBuffer([]byte("DBIT"))
+	err := bencode.Marshal(b, Shake{
+		"meta",
 		6667,
-		sha1.Sum([]byte("192.168.1.64:6667")), //FIXME config?
+		fmt.Sprintf("%s", sha1.Sum([]byte(s.Secret))),
+		fmt.Sprintf("%s", sha1.Sum([]byte("192.168.1.64:6667"))), //FIXME config?
+		files,
 		peers,
 	})
+	check(err)
 	return b.Bytes()
 }
 
@@ -393,7 +314,7 @@ func listenMultiCast() {
 			check(err)
 
 			for secret, s := range shares {
-				if r.Share == sha1.Sum([]byte(secret)) {
+				if r.Share == fmt.Sprintf("%s", sha1.Sum([]byte(secret))) {
 					//TODO polling "known hosts" periodically?
 					//TODO send broadcast to "known hosts" when change happens? (fsnotify)
 
@@ -404,7 +325,6 @@ func listenMultiCast() {
 					//}
 					a := addr.(*net.UDPAddr)
 					a.Port = r.Port
-					fmt.Println(a.String())
 					_, known := s.peers[a.String()]
 					if !known {
 						s.peers[a.String()] = a
@@ -422,9 +342,8 @@ func (s *share) Ping(secret string) []byte {
 	err := bencode.Marshal(buf, Ping{
 		"ping",
 		6667,
-		sha1.Sum([]byte(secret)),
-		//FIXME not sure if Network() is sufficient
-		sha1.Sum([]byte("192.168.1.64:6667")),
+		fmt.Sprintf("%s", sha1.Sum([]byte(secret))),
+		fmt.Sprintf("%s", sha1.Sum([]byte("192.168.1.64:6667"))),
 	})
 	check(err)
 
@@ -457,10 +376,11 @@ func sendMultiCast() {
 
 func main() {
 	fmt.Printf("%d", time.Now().Unix())
-	parseConfig()
-	go listenMultiCast()
+	//parseConfig()
+	//go listenMultiCast()
+	go newmain()
 	go sendMultiCast()
-	go reedWrite()
+	//go reedWrite()
 	for {
 		time.Sleep(100 * time.Millisecond)
 	}

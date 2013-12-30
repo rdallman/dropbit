@@ -41,7 +41,7 @@ PING
   ...REPLIES
 
 PING (id hash, secret hash, port)
-SHAKE (list of [file, meta], port, id, peers)
+SHAKE (list of [file, hash(meta)], peers)
 REQUEST (file, offset, piece offset)
 REPLY (file, offset, piece offset, real data) ... this might could reduce to just data
 
@@ -51,15 +51,16 @@ when they shake, hash each to figure out any differences
     save their meta (0 haves) && request
 
 
-him TO MULTICAST: KNOWS NOBODY
-  write PING
-me TO ADDR FROM MULTICAST: I WANT TO KNOW HIM
-  write PING (to him)
-  -> read metadata
-him LISTENING ON REAL PORT: I WANT TO KNOW HIM
-  read PING
-  write metadata
-  -> read meta
+for each? (each should get a ping, and then meta -- in theory):
+  him TO MULTICAST: KNOWS NOBODY
+    write PING
+  me TO ADDR FROM MULTICAST: I WANT TO KNOW HIM
+    write PING (to him)
+    -> read metadata
+  him LISTENING ON REAL PORT: I WANT TO KNOW HIM
+    read PING
+    write metadata
+    -> read meta
 
 anyone w/ new metadata
   what do I need?
@@ -69,6 +70,61 @@ anyone w/ new metadata
 readMeta() 
   hash(youMeta) != hash(meMeta) 
     Unmarshal(youMeta)
+
+
+rambling v2:
+
+step 1:
+(ping)
+!known peer
+  request [file, hash]..., [peer]...
+
+step 2:
+(with meta)
+for file, hash:
+  !known files || theirs != ours
+    request(file, -1, -1, -1)
+for peer:
+  !known peer
+    request [file, hash]..., [peer]...
+
+step 3:
+(with file meta)
+mfile = SELECT file
+for piece:
+  mpiece != piece
+    request(piece)
+
+sample:
+
+(discovery)
+Shake         -> <-       Shake
+RequestMeta   ->
+RequestMeta   ->          (can also RequestMeta)
+...
+                 <-       PieceMeta
+                 <-       PieceMeta
+                 ...
+Request       ->
+Request       ->
+...
+                 <-       Reply
+                 <-       Reply
+                 ...
+Have/Cancel   ->
+Have/Cancel   ->
+...
+
+##### Caveats:
+
+After shake, there doesn't have to particularly be any order on a per file
+basis, and pieces don't have to come in any order either
+
+RequestMeta is a Request where the parameters for index, begin and length
+are all set to -1 and will get the full (updated) ".torrent" info for a file
+
+PieceMeta is a Piece in reponse to a RequestMeta where the index and begin are
+set to -1 and the Piece field will contain the ".torrent" for a given file
 
 
 
