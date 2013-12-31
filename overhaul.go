@@ -133,22 +133,29 @@ func (s *share) processMeta(msg []byte, sender *net.UDPAddr) {
 		fmt.Println(yhash)
 		if !ok || mhash != yhash {
 			s.requestFile(yf, sender)
+			fmt.Println("requesting ", yf)
 		}
 	}
 }
 
 func (s *share) processRequest(msg []byte, sender *net.UDPAddr) {
+	fmt.Println("process request")
 	var r Request
 	err := bencode.Unmarshal(bytes.NewBuffer(msg), &r)
+	check(err)
+	fmt.Println(r)
 	if r.Index == -1 && r.Begin == -1 && r.Length == -1 {
-		var data bytes.Buffer
-		err := s.Db.QueryRow(
-			"SELECT data",
-			"FROM files",
-			"WHERE path = ?", r.File).Scan(data)
+		//var data bytes.Buffer
+		//err := s.Db.QueryRow(
+		//"SELECT data",
+		//"FROM files",
+		//"WHERE path = ?", r.File).Scan(data)
+		//check(err)
+		var data []byte
+		err := s.Db.QueryRow("SELECT data FROM files WHERE path = ?", r.File).Scan(&data)
 		check(err)
-		fmt.Printf("request for %s: %s", r.File, data.String())
-		p := s.createPiece(r.File, -1, -1, data.Bytes())
+		fmt.Printf("request for %s\n", r.File)
+		p := s.createPiece(r.File, -1, -1, data)
 		s.send(p, sender)
 	}
 	check(err)
@@ -171,6 +178,7 @@ func (s *share) createPiece(path string, index, begin int64, piece []byte) []byt
 }
 
 func (s *share) processPiece(msg []byte, sender *net.UDPAddr) {
+	fmt.Println("Process piece")
 	var p Piece
 	err := bencode.Unmarshal(bytes.NewBuffer(msg), &p)
 	check(err)

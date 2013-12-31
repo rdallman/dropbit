@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 )
 
+//TODO load up their shit into an sqlite database
+
 func loadShare(secret string, s share) {
 	newShare := false
 	//if file doesn't exist, need to drop some tables
@@ -41,7 +43,7 @@ func loadShare(secret string, s share) {
           data BLOB NOT NULL);`)
 		check(err)
 		//} // end newShare here
-		stmt, err := db.Prepare("insert into files(path, time, data) values(?,?,?)")
+		stmt, err := db.Prepare("insert into files(path, time, data) values(?, ?, ?)")
 
 		check(err)
 
