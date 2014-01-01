@@ -1,18 +1,69 @@
+//Copyright Reed Allman 2013
+//TODO Insert Go Modified BSD License here
+
+//TODO this is messy as fuck, I know
+//step #1: make it work
+//step #2: make it fast and pretty
+//step #3: go outside
+//
+//current step:
+// [1] 2 3
+
 package main
 
 import (
 	"bytes"
 	bencode "code.google.com/p/bencode-go"
+	"crypto/sha1"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 )
 
-//TODO load up their shit into an sqlite database
+//uses local absolute path, generates metadata for file
+func getFileInfo(path string) (bt bt_file, err error) {
+	d, err := ioutil.ReadFile(path)
+	if err != nil {
+		return bt, err
+	}
+
+	//TODO compute this smarter, not just min(256k, len(file))
+	plength := int(math.Min(float64(PIECE_LENGTH), float64(len(d))))
+
+	if plength == 0 {
+		return bt, err
+	}
+	iters := len(d) / plength
+	if len(d)%plength > 0 {
+		iters += 1
+	}
+
+	phash := make(chan int, iters)
+	pieces := make([]byte, iters*20)
+	for i := 0; i < iters; i++ {
+		//TODO redundant channel?
+		go func(i int) {
+			//FIXME min() not necessary, then it was...
+			s := sha1.Sum(d[plength*i : int(math.Min(float64(plength*(i+1)), float64(len(d))))])
+			pieces = append(pieces[:(i)*20], append(s[:], pieces[(i)*20:]...)...)
+			phash <- 1
+		}(i)
+	}
+	<-phash
+	return bt_file{int64(len(d)), plength, string(pieces)}, nil
+}
+
+//SPEC theres a map[filename]these floating around
+type bt_file struct {
+	length       int64
+	piece_length int
+	pieces       string
+}
 
 func loadShare(secret string, s share) {
 	newShare := false
