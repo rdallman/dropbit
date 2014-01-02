@@ -133,7 +133,8 @@ func (s *share) processFileMeta(file string, mdata bt_file, rec_meta []byte, sen
 		_, err = s.Db.Exec("UPDATE files SET data=? WHERE path = ?", b.Bytes(), file)
 		check(err)
 		for i := 0; i < len(ydata.Pieces); i += 20 { //256k chunks
-			if i > (len(mdata.Pieces)) ||
+			fmt.Println("yo pieces", ydata.Pieces[i:20])
+			if i > len(mdata.Pieces)+20 ||
 				mdata.Pieces[i:20] != ydata.Pieces[i:20] ||
 				ydata.Piece_length != mdata.Piece_length { //TODO eh, maybe another conditional. why not?
 
@@ -147,6 +148,7 @@ func (s *share) processFileMeta(file string, mdata bt_file, rec_meta []byte, sen
 	} else {
 		//uh, send this their way? they should decide the above...
 	}
+	fmt.Println("done meta")
 }
 
 func (s *share) createPing(secret string) []byte {
