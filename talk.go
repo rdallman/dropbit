@@ -89,12 +89,12 @@ func handleMessage(m UDPMessage, out chan UDPMessage) {
 		fmt.Println("do ping")
 	case "meta":
 		//TODO eh this just feels wrong, unmute this shit
-		s.processMeta(b, addr, out)
+		s.processMeta(UDPMessage{addr, b}, out)
 	case "req":
 		out <- UDPMessage{addr, s.processRequest(b)}
 	case "have":
 	case "piece":
-		s.processPiece(b, out)
+		s.processPiece(UDPMessage{addr, b}, out)
 	}
 }
 

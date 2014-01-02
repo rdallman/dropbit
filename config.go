@@ -25,8 +25,16 @@ import (
 	"path/filepath"
 )
 
+//actual metadata for file
+type bt_file struct {
+	Time         int64  `time`
+	Length       int64  `length`
+	Piece_length int    `piece_length`
+	Pieces       string `pieces`
+}
+
 //uses local absolute path, generates metadata for file
-func getFileInfo(path string) (bt bt_file, err error) {
+func getFileInfo(path string, f os.FileInfo) (bt bt_file, err error) {
 	d, err := ioutil.ReadFile(path)
 	if err != nil {
 		return bt, err
@@ -55,14 +63,7 @@ func getFileInfo(path string) (bt bt_file, err error) {
 		}(i)
 	}
 	<-phash
-	return bt_file{int64(len(d)), plength, string(pieces)}, nil
-}
-
-//SPEC theres a map[filename]these floating around
-type bt_file struct {
-	length       int64
-	piece_length int
-	pieces       string
+	return bt_file{int64(len(d)), f.ModTime().Unix(), plength, string(pieces)}, nil
 }
 
 func loadShare(secret string, s share) {
@@ -90,16 +91,15 @@ func loadShare(secret string, s share) {
 		_, err := db.Exec(
 			`CREATE TABLE files (
           path TEXT NOT NULL PRIMARY KEY,
-          time TEXT NOT NULL,
           data BLOB NOT NULL);`)
 		check(err)
 		//} // end newShare here
-		stmt, err := db.Prepare("insert into files(path, time, data) values(?, ?, ?)")
+		stmt, err := db.Prepare("insert into files(path, data) values(?, ?)")
 
 		check(err)
 
 		filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
-			btf, err := getFileInfo(path)
+			btf, err := getFileInfo(path, f)
 			fmt.Println(path)
 			//err here = directory -- we don't need these
 			if err != nil {
@@ -109,7 +109,7 @@ func loadShare(secret string, s share) {
 			var b bytes.Buffer
 			err = bencode.Marshal(&b, btf)
 			check(err)
-			_, err = stmt.Exec(relPath, f.ModTime().String(), b.Bytes())
+			_, err = stmt.Exec(relPath, b.Bytes())
 			check(err)
 			return nil
 		})

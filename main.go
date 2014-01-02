@@ -10,8 +10,8 @@ var (
 )
 
 const (
-	BLOCK_SIZE   = 1 << 14 //2^14
-	PIECE_LENGTH = 1 << 18 //2^18
+	BLOCK_SIZE   = 1 << 14 //2^14 = 16K
+	PIECE_LENGTH = 1 << 18 //2^18 = 256K
 )
 
 func check(err error) {

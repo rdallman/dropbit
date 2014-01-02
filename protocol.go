@@ -18,9 +18,6 @@ type Shake struct {
 	Peers []string          `peers`
 }
 
-//TODO associate port w/ file? leave open until everybody who needs it
-//is done and then move on to the next file? just open multiple ports at a time...
-
 //request with index, begin & length set to -1 requests torrent for File
 type Request struct {
 	M      string `m`
@@ -28,9 +25,9 @@ type Request struct {
 	Share  string `share`
 	Peer   string `peer`
 	File   string `file`
-	Index  int64  `index` //offset of piece
-	Begin  int64  `begin` //offset w/i piece
-	Length int64  `offset`
+	Index  int    `index` //offset of piece
+	Begin  int    `begin` //offset w/i piece
+	Length int    `offset`
 }
 
 //piece with index & being set to -1 means Piece is a .torrent for File
@@ -41,7 +38,7 @@ type Piece struct {
 	Share string `share`
 	Peer  string `peer`
 	File  string `file`
-	Index int64  `index`
-	Begin int64  `begin`
+	Index int    `index`
+	Begin int    `begin`
 	Piece []byte `piece`
 }

@@ -7,7 +7,9 @@ import (
 	"database/sql"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
+	"math"
 	"net"
+	"os"
 )
 
 type share struct {
@@ -43,7 +45,8 @@ func (s *share) getFileHashes() map[string]string {
 	return files
 }
 
-func (s *share) processMeta(msg []byte, sender *net.UDPAddr, out chan UDPMessage) {
+func (s *share) processMeta(u UDPMessage, out chan UDPMessage) {
+	msg, sender := u.data, u.addr
 	fmt.Println("process meta")
 	mfiles := s.getFileHashes()
 
@@ -55,8 +58,6 @@ func (s *share) processMeta(msg []byte, sender *net.UDPAddr, out chan UDPMessage
 
 	for yf, yhash := range yfiles {
 		mhash, ok := mfiles[yf]
-		fmt.Println(mhash)
-		fmt.Println(yhash)
 		if !ok || mhash != yhash {
 			b := s.createRequest(yf, -1, -1, -1)
 			out <- UDPMessage{sender, b}
@@ -69,28 +70,83 @@ func (s *share) processRequest(msg []byte) []byte {
 	var r Request
 	err := bencode.Unmarshal(bytes.NewBuffer(msg), &r)
 	check(err)
-	fmt.Println(r)
+
+	var data []byte
+	err = s.Db.QueryRow("SELECT data FROM files WHERE path = ?", r.File).Scan(&data)
+	check(err)
+
+	var mdata bt_file
+	err = bencode.Unmarshal(bytes.NewBuffer(data), &mdata)
+	check(err)
+
 	if r.Index == -1 && r.Begin == -1 && r.Length == -1 {
-		var data []byte
-		err := s.Db.QueryRow("SELECT data FROM files WHERE path = ?", r.File).Scan(&data)
-		check(err)
-		fmt.Printf("request for %s\n", r.File)
 		return s.createPiece(r.File, -1, -1, data)
 	}
+
+	buf := make([]byte, r.Length)
+	f, err := os.Open(r.File)
 	check(err)
-	return []byte{}
+	_, err = f.ReadAt(buf, int64(r.Index*mdata.Piece_length+r.Begin))
+	check(err)
+	return buf
 }
 
-func (s *share) processPiece(msg []byte, out chan UDPMessage) {
+func (s *share) processPiece(u UDPMessage, out chan UDPMessage) {
+	msg, sender := u.data, u.addr
 	fmt.Println("Process piece")
 	var p Piece
 	err := bencode.Unmarshal(bytes.NewBuffer(msg), &p)
 	check(err)
 
+	var data []byte
+	err = s.Db.QueryRow("SELECT data FROM files WHERE path = ?", p.File).Scan(&data)
+	check(err)
+
+	var mdata bt_file
+	err = bencode.Unmarshal(bytes.NewBuffer(data), &mdata)
+	check(err)
+
 	if p.Index == -1 && p.Begin == -1 {
 		fmt.Println("got meta")
+		//well as much as I wanted to get it out of the way, it sure is ugly
+		s.processFileMeta(p.File, mdata, p.Piece, sender, out)
+	} else {
+		fmt.Printf("opening %s to write at %d, %d\n", p.File, p.Index, p.Begin)
+		//TODO eh, flags are weird
+		//TODO also need to see behavior on files where WriteAt() will be OOB
+		f, err := os.OpenFile(p.File, os.O_RDWR|os.O_CREATE, 0666)
+		check(err)
+		_, err = f.WriteAt(p.Piece, int64(p.Index*mdata.Piece_length+p.Begin))
+		check(err)
 	}
-	fmt.Printf("opening %s to write %s at %d, %d\n", p.File, string(p.Piece), p.Index, p.Begin)
+}
+
+//I got a fever, and the only prescription, is more parameters...
+func (s *share) processFileMeta(file string, mdata bt_file, rec_meta []byte, sender *net.UDPAddr, out chan UDPMessage) {
+	var ydata bt_file
+	b := bytes.NewBuffer(rec_meta)
+	err := bencode.Unmarshal(b, &ydata)
+	check(err)
+
+	if mdata.Time < ydata.Time {
+		//TODO save time, piece length, put all (off) "have" to 0, request each piece
+		_, err = s.Db.Exec("UPDATE files SET data=? WHERE path = ?", b.Bytes(), file)
+		check(err)
+		for i := 0; i < len(ydata.Pieces); i += 20 { //256k chunks
+			if i > (len(mdata.Pieces)) ||
+				mdata.Pieces[i:20] != ydata.Pieces[i:20] ||
+				ydata.Piece_length != mdata.Piece_length { //TODO eh, maybe another conditional. why not?
+
+				rlength := int(math.Min(float64(BLOCK_SIZE), float64(ydata.Piece_length)))
+				for j := 0; j < ydata.Piece_length; j += rlength { //16K chunks
+					length := int(math.Min(float64(ydata.Length), float64(j)))
+					out <- UDPMessage{sender, s.createRequest(file, i, j, length)}
+				}
+			}
+		}
+	} else {
+		//uh, send this their way? they should decide the above...
+	}
 }
 
 func (s *share) createPing(secret string) []byte {
@@ -130,7 +186,7 @@ func (s *share) createMetaShake() []byte {
 	return b.Bytes()
 }
 
-func (s *share) createPiece(path string, index, begin int64, piece []byte) []byte {
+func (s *share) createPiece(path string, index, begin int, piece []byte) []byte {
 	b := bytes.NewBuffer([]byte("DBIT"))
 	err := bencode.Marshal(b, Piece{
 		"piece",
@@ -146,7 +202,7 @@ func (s *share) createPiece(path string, index, begin int64, piece []byte) []byt
 	return b.Bytes()
 }
 
-func (s *share) createRequest(path string, index, begin, length int64) []byte {
+func (s *share) createRequest(path string, index, begin, length int) []byte {
 	b := bytes.NewBuffer([]byte("DBIT"))
 	err := bencode.Marshal(b, Request{
 		"req",
