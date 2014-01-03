@@ -94,7 +94,7 @@ func loadShare(secret string, s share) {
           data BLOB NOT NULL);`)
 		check(err)
 		//} // end newShare here
-		stmt, err := db.Prepare("insert into files(path, data) values(?, ?)")
+		stmt, err := db.Prepare("INSERT INTO files(path, data) values(?, ?)")
 
 		check(err)
 

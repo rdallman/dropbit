@@ -100,17 +100,42 @@ func (s *share) processPiece(u UDPMessage, out chan UDPMessage) {
 
 	var data []byte
 	err = s.Db.QueryRow("SELECT data FROM files WHERE path = ?", p.File).Scan(&data)
-	check(err)
-
 	var mdata bt_file
 	err = bencode.Unmarshal(bytes.NewBuffer(data), &mdata)
-	check(err)
+	check(err) //as long as there's no panic here, we're good
 
 	if p.Index == -1 && p.Begin == -1 {
 		fmt.Println("got meta")
-		//well as much as I wanted to get it out of the way, it sure is ugly
-		s.processFileMeta(p.File, mdata, p.Piece, sender, out)
-	} else {
+		var ydata bt_file
+		err = bencode.Unmarshal(bytes.NewBuffer(p.Piece), &ydata)
+		check(err)
+
+		if data == nil {
+			_, err := s.Db.Exec("INSERT INTO files(path, data) values(?, ?)", p.File, p.Piece)
+			check(err)
+		} else if mdata.Time > ydata.Time {
+			return //I don't need this
+		}
+
+		//process meta; at this point, I either didn't have it or theirs is newer
+
+		rlength := int(math.Min(float64(BLOCK_SIZE), float64(ydata.Piece_length)))
+		for i := 0; i < len(ydata.Pieces)/20; i++ { //256k chunks
+			if data == nil || i > len(mdata.Pieces)/20 ||
+				mdata.Pieces[i:i+20] != ydata.Pieces[i:i+20] {
+				for j := 0; j < ydata.Piece_length; j += rlength { //16K chunks
+					length := int(math.Min(float64(ydata.Length-int64((i*ydata.Piece_length)+j)), float64(rlength)))
+					//TODO the below was actually right
+					//if int64((i*ydata.Piece_length)+j+rlength) > ydata.Length { //if EOF
+					//length := ydata.Length - int64((i*ydata.Piece_length)+j)
+					//out <- UDPMessage{sender, s.createRequest(p.File, i, j, int(length))}
+					//break //in theory, outer for should be on last iter... so should break
+					//}
+					out <- UDPMessage{sender, s.createRequest(p.File, i, j, length)}
+				}
+			}
+		}
+	} else if data != nil {
 		fmt.Printf("opening %s to write at %d, %d\n", p.File, p.Index, p.Begin)
 		//TODO eh, flags are weird
 		//TODO also need to see behavior on files where WriteAt() will be OOB
@@ -119,36 +144,6 @@ func (s *share) processPiece(u UDPMessage, out chan UDPMessage) {
 		_, err = f.WriteAt(p.Piece, int64(p.Index*mdata.Piece_length+p.Begin))
 		check(err)
 	}
-}
-
-//I got a fever, and the only prescription, is more parameters...
-func (s *share) processFileMeta(file string, mdata bt_file, rec_meta []byte, sender *net.UDPAddr, out chan UDPMessage) {
-	var ydata bt_file
-	b := bytes.NewBuffer(rec_meta)
-	err := bencode.Unmarshal(b, &ydata)
-	check(err)
-
-	if mdata.Time < ydata.Time {
-		//TODO save time, piece length, put all (off) "have" to 0, request each piece
-		_, err = s.Db.Exec("UPDATE files SET data=? WHERE path = ?", b.Bytes(), file)
-		check(err)
-		for i := 0; i < len(ydata.Pieces); i += 20 { //256k chunks
-			fmt.Println("yo pieces", ydata.Pieces[i:20])
-			if i > len(mdata.Pieces)+20 ||
-				mdata.Pieces[i:20] != ydata.Pieces[i:20] ||
-				ydata.Piece_length != mdata.Piece_length { //TODO eh, maybe another conditional. why not?
-
-				rlength := int(math.Min(float64(BLOCK_SIZE), float64(ydata.Piece_length)))
-				for j := 0; j < ydata.Piece_length; j += rlength { //16K chunks
-					length := int(math.Min(float64(ydata.Length), float64(j)))
-					out <- UDPMessage{sender, s.createRequest(file, i, j, length)}
-				}
-			}
-		}
-	} else {
-		//uh, send this their way? they should decide the above...
-	}
-	fmt.Println("done meta")
 }
 
 func (s *share) createPing(secret string) []byte {
