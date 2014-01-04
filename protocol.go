@@ -40,5 +40,5 @@ type Piece struct {
 	File  string `file`
 	Index int    `index`
 	Begin int    `begin`
-	Piece []byte `piece`
+	Piece string `piece` //this is a blob
 }
