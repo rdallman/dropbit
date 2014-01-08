@@ -1,11 +1,11 @@
 language: go
 
 go:
-	- 1.0
-	- 1.1
-	- 1.2
-	- tip
+  - 1.0
+  - 1.1 
+  - 1.2
+  - tip
 
 install:
-	- go get code.google.com/p/bencode-go
-	- go get github.com/mattn/go-sqlite3
+  - go get code.google.com/p/bencode-go
+  - go get github.com/mattn/go-sqlite3
