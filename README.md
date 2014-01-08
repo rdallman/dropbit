@@ -2,6 +2,7 @@
 
 ### meow
 
+* !!!turn off LAN encryption for btsync, SOLVE IT ONCE AND FOR ALL!
 * figure out read-only vs full-access (LAN appears to only search for 1 key,
   which is neither of these as far as I can tell)
 * known hosts
