@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/roberthorn/dropbit.png?branch=master)](https://travis-ci.org/roberthorn/dropbit)
+
 # The Big To-Do List
 
 ### meow
