@@ -1,12 +1,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 )
 
 var (
 	shares = make(map[string]share) //map[secret]share
-	port   = 6667
+	port   = flag.Int("p", 6667, "Port to run on")
+	//local  = flag.Int("l", 3838, "Port for local broadcast")
 )
 
 const (
@@ -22,6 +24,7 @@ func check(err error) {
 
 func main() {
 	//discover motha fuckas
+	flag.Parse()
 	parseConfig()
 	go sendMultiCast()
 	incoming := make(chan UDPMessage)

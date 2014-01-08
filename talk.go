@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"fmt"
 	"net"
+	"strconv"
 )
 
 type UDPMessage struct {
@@ -14,7 +15,7 @@ type UDPMessage struct {
 }
 
 func listen(msg chan UDPMessage) {
-	me, err := net.ResolveUDPAddr("udp", ":6667")
+	me, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(*port))
 	mcast, err := net.ResolveUDPAddr("udp", "239.192.0.0:3838")
 	lan, err := net.ListenMulticastUDP("udp", nil, mcast)
 	sock, err := net.ListenUDP("udp", me)
@@ -77,6 +78,7 @@ func handleMessage(m UDPMessage, out chan UDPMessage) {
 	//TODO consider seperate channel for peer discovery
 	//TODO also this can be done elsewhere
 	addr = changePort(addr, h.Port)
+	fmt.Println(addr)
 	_, known := s.peers[addr.String()]
 	if !known {
 		s.peers[addr.String()] = addr

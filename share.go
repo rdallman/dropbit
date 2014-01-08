@@ -159,7 +159,7 @@ func (s *share) createPing(secret string) []byte {
 	buf := bytes.NewBuffer([]byte("DBIT"))
 	err := bencode.Marshal(buf, Header{
 		"ping",
-		6667,
+		*port,
 		fmt.Sprintf("%s", sha1.Sum([]byte(secret))),
 		fmt.Sprintf("%s", sha1.Sum([]byte("192.168.1.64:6667"))),
 	})
@@ -182,7 +182,7 @@ func (s *share) createMetaShake() []byte {
 	b := bytes.NewBuffer([]byte("DBIT"))
 	err := bencode.Marshal(b, Shake{
 		"meta",
-		6667,
+		*port,
 		fmt.Sprintf("%s", sha1.Sum([]byte(s.Secret))),
 		fmt.Sprintf("%s", sha1.Sum([]byte("192.168.1.64:6667"))), //FIXME config?
 		files,
@@ -196,7 +196,7 @@ func (s *share) createPiece(path string, index, begin int, piece []byte) []byte 
 	b := bytes.NewBuffer([]byte("DBIT"))
 	err := bencode.Marshal(b, Piece{
 		"piece",
-		6667,
+		*port,
 		fmt.Sprintf("%s", sha1.Sum([]byte(s.Secret))),
 		fmt.Sprintf("%s", sha1.Sum([]byte("192.168.1.64:6667"))),
 		path,
@@ -213,7 +213,7 @@ func (s *share) createRequest(path string, index, begin, length int) []byte {
 	b := bytes.NewBuffer([]byte("DBIT"))
 	err := bencode.Marshal(b, Request{
 		"req",
-		6667,
+		*port,
 		fmt.Sprintf("%s", sha1.Sum([]byte(s.Secret))),
 		fmt.Sprintf("%s", sha1.Sum([]byte("192.168.1.64:6667"))),
 		path,
