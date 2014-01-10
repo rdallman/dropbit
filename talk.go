@@ -19,6 +19,7 @@ func listen(msg chan UDPMessage) {
 	mcast, err := net.ResolveUDPAddr("udp", "239.192.0.0:3838")
 	lan, err := net.ListenMulticastUDP("udp", nil, mcast)
 	sock, err := net.ListenUDP("udp", me)
+	sock.SetReadBuffer(1 << 16) //64K
 	fmt.Println(me.String())
 	fmt.Println(sock.LocalAddr(), sock.RemoteAddr())
 	check(err)
@@ -102,6 +103,7 @@ func handleMessage(m UDPMessage, out chan UDPMessage) {
 
 func sendMessage(m UDPMessage) {
 	conn, err := net.DialUDP("udp", nil, m.addr)
+	conn.SetWriteBuffer(len(m.data))
 	_, err = conn.Write(m.data)
 	check(err)
 }

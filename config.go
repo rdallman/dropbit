@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 //actual metadata for file
@@ -40,8 +41,9 @@ func getFileInfo(path string, f os.FileInfo) (bt bt_file, err error) {
 		return bt, err
 	}
 
+	fmt.Println(f.Size())
 	//TODO compute this smarter, not just min(256k, len(file))
-	plength := int(math.Min(float64(PIECE_LENGTH), float64(len(d))))
+	plength := int(math.Min(float64(PIECE_LENGTH), float64(f.Size())))
 
 	if plength == 0 {
 		return bt, err
@@ -51,19 +53,19 @@ func getFileInfo(path string, f os.FileInfo) (bt bt_file, err error) {
 		iters += 1
 	}
 
-	phash := make(chan int, iters)
-	pieces := make([]byte, iters*20)
+	//compute sha1 of each piece
+	var wg sync.WaitGroup
+	pieces := make([]byte, 0, iters*20)
+	wg.Add(iters)
 	for i := 0; i < iters; i++ {
-		//TODO redundant channel?
 		go func(i int) {
-			//FIXME min() not necessary, then it was...
 			s := sha1.Sum(d[plength*i : int(math.Min(float64(plength*(i+1)), float64(len(d))))])
-			pieces = append(pieces[:(i)*20], append(s[:], pieces[(i)*20:]...)...)
-			phash <- 1
+			pieces = append(pieces[:i*20], append(s[:], pieces[i*20:]...)...)
+			wg.Done()
 		}(i)
 	}
-	<-phash
-	return bt_file{int64(len(d)), f.ModTime().Unix(), plength, string(pieces)}, nil
+	wg.Wait()
+	return bt_file{f.ModTime().Unix(), f.Size(), plength, string(pieces)}, nil
 }
 
 func loadShare(secret string, s share) {
