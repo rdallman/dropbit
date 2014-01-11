@@ -14,6 +14,9 @@ type UDPMessage struct {
 	data []byte
 }
 
+//map[address]conn
+var peers = make(map[string]*net.UDPConn)
+
 func listen(msg chan UDPMessage) {
 	me, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(*port))
 	mcast, err := net.ResolveUDPAddr("udp", "239.192.0.0:3838")
@@ -94,15 +97,28 @@ func handleMessage(m UDPMessage, out chan UDPMessage) {
 		//TODO eh this just feels wrong, unmute this shit
 		s.processMeta(UDPMessage{addr, b}, out)
 	case "req":
-		out <- UDPMessage{addr, s.processRequest(b)}
+		m, err := s.processRequest(b)
+		if err != nil {
+			return
+		}
+		out <- UDPMessage{addr, m}
 	case "have":
 	case "piece":
 		s.processPiece(UDPMessage{addr, b}, out)
 	}
 }
 
-func sendMessage(m UDPMessage) {
-	conn, err := net.DialUDP("udp", nil, m.addr)
+func sendMessage(m *UDPMessage) {
+	conn, ok := peers[m.addr.String()]
+	var err error
+	if !ok {
+		conn, err = net.DialUDP("udp", nil, m.addr)
+		check(err)
+		if err != nil {
+			return
+		}
+		peers[m.addr.String()] = conn
+	}
 	conn.SetWriteBuffer(len(m.data))
 	_, err = conn.Write(m.data)
 	check(err)

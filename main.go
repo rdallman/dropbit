@@ -28,7 +28,7 @@ func main() {
 	parseConfig()
 	go sendMultiCast()
 	incoming := make(chan UDPMessage)
-	listen(incoming)
+	go listen(incoming)
 	outgoing := make(chan UDPMessage)
 
 	for {
@@ -36,7 +36,7 @@ func main() {
 		case m := <-incoming:
 			go handleMessage(m, outgoing)
 		case o := <-outgoing:
-			go sendMessage(o)
+			go sendMessage(&o)
 		}
 	}
 }
