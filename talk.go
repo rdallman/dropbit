@@ -109,6 +109,7 @@ func handleMessage(m *UDPMessage, out chan *UDPMessage) {
 	case "piece":
 		s.processPiece(&UDPMessage{addr, b}, out)
 	}
+	return
 }
 
 func sendMessage(m *UDPMessage) {
@@ -125,6 +126,7 @@ func sendMessage(m *UDPMessage) {
 	}
 	_, err = conn.Write(m.data)
 	check(err)
+	return
 }
 
 func changePort(addr *net.UDPAddr, port int) *net.UDPAddr {

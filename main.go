@@ -39,15 +39,17 @@ func main() {
 	go listen(incoming)
 
 	for {
-		<-sem
+		fmt.Println(len(sem))
 		select {
 		case m := <-incoming:
 			go func(m *UDPMessage) {
+				<-sem
 				handleMessage(m, outgoing)
 				sem <- 1
 			}(m)
 		case o := <-outgoing:
 			go func(o *UDPMessage) {
+				<-sem
 				sendMessage(o)
 				sem <- 1
 			}(o)
