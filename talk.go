@@ -17,14 +17,16 @@ type UDPMessage struct {
 //map[address]conn
 var peers = make(map[string]*net.UDPConn)
 
-func listen(msg chan UDPMessage) {
+func listen(msg chan *UDPMessage) {
 	me, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(*port))
+	check(err)
 	mcast, err := net.ResolveUDPAddr("udp", "239.192.0.0:3838")
+	check(err)
 	lan, err := net.ListenMulticastUDP("udp", nil, mcast)
+	check(err)
 	sock, err := net.ListenUDP("udp", me)
+	check(err)
 	sock.SetReadBuffer(1 << 16) //64K
-	fmt.Println(me.String())
-	fmt.Println(sock.LocalAddr(), sock.RemoteAddr())
 	check(err)
 
 	l := func(c *net.UDPConn) {
@@ -34,7 +36,7 @@ func listen(msg chan UDPMessage) {
 			if err != nil {
 				continue
 			}
-			msg <- UDPMessage{addr, b}
+			msg <- &UDPMessage{addr, b}
 		}
 	}
 	go l(lan)
@@ -66,7 +68,7 @@ func parseHeader(b []byte) (Header, error) {
 	return h, fmt.Errorf("Not a Dropbit message")
 }
 
-func handleMessage(m UDPMessage, out chan UDPMessage) {
+func handleMessage(m *UDPMessage, out chan *UDPMessage) {
 	addr, b := m.addr, m.data
 
 	h, err := parseHeader(b)
@@ -86,7 +88,7 @@ func handleMessage(m UDPMessage, out chan UDPMessage) {
 	_, known := s.peers[addr.String()]
 	if !known {
 		s.peers[addr.String()] = addr
-		out <- UDPMessage{addr, s.createMetaShake()}
+		out <- &UDPMessage{addr, s.createMetaShake()}
 	}
 	b = b[4:] //slice off DBIT
 
@@ -95,16 +97,17 @@ func handleMessage(m UDPMessage, out chan UDPMessage) {
 		fmt.Println("do ping")
 	case "meta":
 		//TODO eh this just feels wrong, unmute this shit
-		s.processMeta(UDPMessage{addr, b}, out)
+		s.processMeta(&UDPMessage{addr, b}, out)
 	case "req":
 		m, err := s.processRequest(b)
 		if err != nil {
+			//if DB locks up or something
 			return
 		}
-		out <- UDPMessage{addr, m}
+		out <- &UDPMessage{addr, m}
 	case "have":
 	case "piece":
-		s.processPiece(UDPMessage{addr, b}, out)
+		s.processPiece(&UDPMessage{addr, b}, out)
 	}
 }
 
@@ -113,13 +116,13 @@ func sendMessage(m *UDPMessage) {
 	var err error
 	if !ok {
 		conn, err = net.DialUDP("udp", nil, m.addr)
+		conn.SetWriteBuffer(65000)
 		check(err)
 		if err != nil {
 			return
 		}
 		peers[m.addr.String()] = conn
 	}
-	conn.SetWriteBuffer(len(m.data))
 	_, err = conn.Write(m.data)
 	check(err)
 }
