@@ -75,20 +75,16 @@ func (s *share) processRequest(msg []byte) ([]byte, error) {
 		return []byte{}, err
 	}
 
-	var data []byte
-	err = s.Db.QueryRow("SELECT data FROM files WHERE path = ?", r.File).Scan(&data)
-	if err != nil {
-		return []byte{}, err
-	}
-
-	var mdata bt_file
-	err = bencode.Unmarshal(bytes.NewBuffer(data), &mdata)
-	if err != nil {
-		return []byte{}, err
-	}
+	mdata, err := s.getFileMeta(r.File)
+	check(err)
 
 	if r.Index == -1 && r.Begin == -1 && r.Length == -1 {
-		return s.createPiece(r.File, -1, -1, data), nil
+		fmt.Println("want some meta")
+		var data bytes.Buffer
+		err = bencode.Marshal(&data, *mdata)
+		fmt.Println(mdata)
+		check(err)
+		return s.createPiece(r.File, -1, -1, data.Bytes()), nil
 	}
 
 	buf := make([]byte, r.Length)
@@ -240,4 +236,17 @@ func (s *share) createRequest(path string, index, begin, length int) []byte {
 	})
 	check(err)
 	return b.Bytes()
+}
+
+func (s *share) getFileMeta(path string) (btf *bt_file, err error) {
+	var data []byte
+	err = s.Db.QueryRow("SELECT data FROM files WHERE path = ?", path).Scan(&data)
+	if err != nil {
+		return btf, err
+	}
+
+	//TODO THIS IS WEIRD, WE NEED TO GO DEEPER
+	var bt bt_file
+	err = bencode.Unmarshal(bytes.NewBuffer(data), &bt)
+	return &bt, err
 }

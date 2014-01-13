@@ -35,7 +35,7 @@ type bt_file struct {
 }
 
 //uses local absolute path, generates metadata for file
-func getFileInfo(path string, f os.FileInfo) (bt bt_file, err error) {
+func createFileMeta(path string, f os.FileInfo) (bt bt_file, err error) {
 	d, err := ioutil.ReadFile(path)
 	if err != nil {
 		return bt, err
@@ -68,7 +68,7 @@ func getFileInfo(path string, f os.FileInfo) (bt bt_file, err error) {
 	return bt_file{f.ModTime().Unix(), f.Size(), plength, string(pieces)}, nil
 }
 
-func loadShare(secret string, s share) {
+func loadShare(secret string, s *share) {
 	newShare := false
 	//if file doesn't exist, need to drop some tables
 	//has to be done here because sql.Open will make a file
@@ -81,7 +81,10 @@ func loadShare(secret string, s share) {
 		fmt.Println("no db")
 		db, err := sql.Open("sqlite3", secret+".db")
 		check(err)
-		shares[secret] = share{Secret: secret, Path: s.Path, Db: db, peers: s.peers}
+		s.Db = db
+		shares[secret] = *s
+		//shares[secret] = share{Secret: secret, Path: s.Path, Db: db, peers: s.peers}
+		//s = shares[secret]
 	}
 	//drop some tables
 	if newShare {
@@ -89,33 +92,56 @@ func loadShare(secret string, s share) {
 		//  it appears there are about 20 ways to do io in stdlib
 		//TODO time not in sync db, they parse bencoding -- maybe a good idea?
 		//      allows: select * from files where time > x;  x = most recent, gets all new
-		db := shares[secret].Db
-		_, err := db.Exec(
+		_, err := s.Db.Exec(
 			`CREATE TABLE files (
           path TEXT NOT NULL PRIMARY KEY,
           data BLOB NOT NULL);`)
 		check(err)
-		//} // end newShare here
-		stmt, err := db.Prepare("INSERT INTO files(path, data) values(?, ?)")
+	}
 
+	insert, err := s.Db.Prepare("INSERT INTO files(path, data) values(?, ?)")
+	check(err)
+	update, err := s.Db.Prepare("UPDATE files SET data = ? WHERE path = ?")
+	check(err)
+
+	filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
+		if f.IsDir() {
+			return nil
+		}
+		relPath := path[len(s.Path)+1:] //slice abs + / off
+		fmt.Println(relPath)
+
+		updated := false
+		if !newShare {
+			btf, err := s.getFileMeta(relPath)
+			check(err)
+
+			if btf != nil && f.ModTime().Unix() > btf.Time {
+				updated = true
+			} else if btf != nil {
+				return nil //if not update & we have something, we can leave
+			}
+			//if nil, new file.. so treat same
+		}
+		btf, err := createFileMeta(path, f)
 		check(err)
 
-		filepath.Walk(s.Path, func(path string, f os.FileInfo, err error) error {
-			btf, err := getFileInfo(path, f)
-			fmt.Println(path)
-			//err here = directory -- we don't need these
-			if err != nil {
-				return nil
-			}
-			relPath := path[len(s.Path)+1:]
-			var b bytes.Buffer
-			err = bencode.Marshal(&b, btf)
+		fmt.Println(path)
+
+		var b bytes.Buffer
+		err = bencode.Marshal(&b, btf)
+		check(err)
+		if updated {
+			_, err = update.Exec(relPath, b.Bytes())
 			check(err)
-			_, err = stmt.Exec(relPath, b.Bytes())
+			fmt.Println("update")
+		} else {
+			_, err = insert.Exec(relPath, b.Bytes())
+			fmt.Println("not update")
 			check(err)
-			return nil
-		})
-	}
+		}
+		return nil
+	})
 }
 
 //TODO watch changes on this file to reload it
@@ -136,7 +162,7 @@ func parseConfig() {
 		if !ok {
 			//TODO tricky here...
 			s = newShare(secret, s.Path)
-			loadShare(secret, s)
+			loadShare(secret, &s)
 		}
 	}
 }
