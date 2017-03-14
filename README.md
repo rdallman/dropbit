@@ -1,3 +1,6 @@
+[![Build Status](https://drone.io/github.com/roberthorn/dropbit/status.png)](https://drone.io/github.com/roberthorn/dropbit/latest)
+[![Coverage Status](https://coveralls.io/repos/roberthorn/dropbit/badge.png)](https://coveralls.io/r/roberthorn/dropbit)
+
 # The Big To-Do List
 
 ### meow
